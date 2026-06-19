@@ -4,12 +4,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/lib/context/AuthContext';
 import { useRouter } from 'next/navigation';
-import { db } from '@/lib/firebase';
-import { 
-  doc, setDoc, deleteDoc, onSnapshot, 
-  collection, addDoc, updateDoc, serverTimestamp, 
-  getDoc, getDocs, query, where, limit 
-} from 'firebase/firestore';
+import { db, ref, set, get, update, remove, onValue, push } from '@/lib/firebase';
 import UserMenu from '@/components/UserMenu';
 
 const servers = {
@@ -38,7 +33,6 @@ export default function ChatPage() {
   const partnerRef = useRef<string>('');
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // TEMİZLİK
   const cleanup = async () => {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     if (pcRef.current) { pcRef.current.close(); pcRef.current = null; }
@@ -49,17 +43,18 @@ export default function ChatPage() {
     if (localVideo.current) localVideo.current.srcObject = null;
     if (remoteVideo.current) remoteVideo.current.srcObject = null;
     
-    if (user && roomRef.current) {
+    if (user) {
       try { 
-        await deleteDoc(doc(db, 'waiting', user.id));
-        await updateDoc(doc(db, 'rooms', roomRef.current), { status: 'ended' });
+        await remove(ref(db, `waiting/${user.id}`));
+        if (roomRef.current) {
+          await update(ref(db, `rooms/${roomRef.current}`), { status: 'ended' });
+        }
       } catch(e) {}
     }
     roomRef.current = '';
     partnerRef.current = '';
   };
 
-  // KAMERA BAŞLAT
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
@@ -75,7 +70,6 @@ export default function ChatPage() {
     }
   };
 
-  // EŞLEŞME BAŞLAT
   const startMatch = async () => {
     if (!user) return;
     await cleanup();
@@ -84,8 +78,7 @@ export default function ChatPage() {
     try {
       await startCamera();
       
-      // Bekleme havuzuna ekle
-      await setDoc(doc(db, 'waiting', user.id), {
+      await set(ref(db, `waiting/${user.id}`), {
         userId: user.id,
         name: user.username,
         photo: user.profilePhoto,
@@ -93,68 +86,59 @@ export default function ChatPage() {
         time: Date.now()
       });
 
-      // Bekleyenleri kontrol et
-      checkWaiting();
+      // Bekleyenleri dinle
+      const waitingRef = ref(db, 'waiting');
+      onValue(waitingRef, async (snapshot) => {
+        if (snapshot.exists()) {
+          const data = snapshot.val();
+          const keys = Object.keys(data).filter(k => k !== user.id);
+          setWaitingCount(keys.length);
+          
+          if (keys.length > 0 && status === 'searching') {
+            const partnerKey = keys[0];
+            const partnerData = data[partnerKey];
+            
+            setStatus('matched');
+            setPartnerName(partnerData.name);
+            partnerRef.current = partnerData.userId;
+            
+            // Oda oluştur
+            const newRoomRef = push(ref(db, 'rooms'));
+            const roomId = newRoomRef.key!;
+            roomRef.current = roomId;
+            
+            await set(ref(db, `rooms/${roomId}`), {
+              users: [user.id, partnerData.userId],
+              created: Date.now(),
+              status: 'active'
+            });
+            
+            // Beklemeden çıkar
+            await remove(ref(db, `waiting/${user.id}`));
+            await remove(ref(db, `waiting/${partnerKey}`));
+            
+            startCall(roomId, partnerData.userId);
+          }
+        }
+      });
       
     } catch(e) {
       setStatus('idle');
     }
   };
 
-  // BEKLEYENLERİ KONTROL ET
-  const checkWaiting = async () => {
-    if (!user) return;
-    
-    try {
-      const snap = await getDocs(collection(db, 'waiting'));
-      const waiting = snap.docs.filter(d => d.id !== user.id);
-      setWaitingCount(waiting.length);
-      
-      if (waiting.length > 0) {
-        // Eşleşme bulundu!
-        const partner = waiting[0];
-        const partnerData = partner.data();
-        
-        setStatus('matched');
-        setPartnerName(partnerData.name);
-        partnerRef.current = partnerData.userId;
-        
-        // Oda oluştur
-        const room = await addDoc(collection(db, 'rooms'), {
-          users: [user.id, partnerData.userId],
-          created: serverTimestamp(),
-          status: 'active'
-        });
-        roomRef.current = room.id;
-        
-        // İki tarafı da beklemeden çıkar
-        await deleteDoc(doc(db, 'waiting', user.id));
-        await deleteDoc(doc(db, 'waiting', partner.id));
-        
-        // WebRTC başlat
-        startCall(room.id, partnerData.userId);
-      }
-    } catch(e) {
-      console.error(e);
-    }
-  };
-
-  // WEBRTC GÖRÜŞME
   const startCall = async (roomId: string, partnerId: string) => {
     const pc = new RTCPeerConnection(servers);
     pcRef.current = pc;
     
-    // Lokal stream
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(t => pc.addTrack(t, streamRef.current!));
     }
     
-    // Uzak stream
     pc.ontrack = (e) => {
       if (remoteVideo.current && e.streams[0]) {
         remoteVideo.current.srcObject = e.streams[0];
         setStatus('connected');
-        // Süre başlat
         let sec = 0;
         timerRef.current = setInterval(() => {
           sec++;
@@ -163,10 +147,10 @@ export default function ChatPage() {
       }
     };
     
-    // ICE adayları
     pc.onicecandidate = (e) => {
       if (e.candidate) {
-        addDoc(collection(db, 'rooms', roomId, 'signals'), {
+        const sigRef = push(ref(db, `rooms/${roomId}/signals`));
+        set(sigRef, {
           type: 'ice',
           data: e.candidate.toJSON(),
           from: user!.id
@@ -181,42 +165,45 @@ export default function ChatPage() {
     };
     
     // Sinyalleri dinle
-    onSnapshot(collection(db, 'rooms', roomId, 'signals'), async (snap) => {
-      for (const change of snap.docChanges()) {
-        if (change.type !== 'added') continue;
-        const signal = change.doc.data();
-        if (signal.from === partnerId) {
-          try {
-            if (signal.type === 'offer') {
-              await pc.setRemoteDescription(signal.data);
-              const answer = await pc.createAnswer();
-              await pc.setLocalDescription(answer);
-              await addDoc(collection(db, 'rooms', roomId, 'signals'), {
-                type: 'answer',
-                data: answer.toJSON(),
-                from: user!.id
-              });
-            } else if (signal.type === 'answer') {
-              await pc.setRemoteDescription(signal.data);
-            } else if (signal.type === 'ice') {
-              await pc.addIceCandidate(new RTCIceCandidate(signal.data));
-            }
-          } catch(e) { console.error(e); }
+    const signalsRef = ref(db, `rooms/${roomId}/signals`);
+    onValue(signalsRef, async (snapshot) => {
+      if (snapshot.exists()) {
+        const signals = snapshot.val();
+        for (const key of Object.keys(signals)) {
+          const signal = signals[key];
+          if (signal.from === partnerId) {
+            try {
+              if (signal.type === 'offer') {
+                await pc.setRemoteDescription(signal.data);
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                const sigRef = push(ref(db, `rooms/${roomId}/signals`));
+                await set(sigRef, {
+                  type: 'answer',
+                  data: answer.toJSON(),
+                  from: user!.id
+                });
+              } else if (signal.type === 'answer') {
+                await pc.setRemoteDescription(signal.data);
+              } else if (signal.type === 'ice') {
+                await pc.addIceCandidate(new RTCIceCandidate(signal.data));
+              }
+            } catch(e) { console.error(e); }
+          }
         }
       }
     });
     
-    // Offer gönder
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    await addDoc(collection(db, 'rooms', roomId, 'signals'), {
+    const sigRef = push(ref(db, `rooms/${roomId}/signals`));
+    await set(sigRef, {
       type: 'offer',
       data: offer.toJSON(),
       from: user!.id
     });
   };
 
-  // GÖRÜŞMEYİ BİTİR
   const endCall = async () => {
     await cleanup();
     setStatus('idle');
@@ -224,20 +211,17 @@ export default function ChatPage() {
     setCallTime(0);
   };
 
-  // SONRAKİ
   const nextCall = async () => {
     await endCall();
     setTimeout(() => startMatch(), 300);
   };
 
-  // İPTAL
   const cancelSearch = async () => {
-    if (user) await deleteDoc(doc(db, 'waiting', user.id));
+    if (user) await remove(ref(db, `waiting/${user.id}`));
     await cleanup();
     setStatus('idle');
   };
 
-  // MİKROFON
   const toggleMute = () => {
     if (streamRef.current) {
       streamRef.current.getAudioTracks().forEach(t => t.enabled = !t.enabled);
@@ -245,7 +229,6 @@ export default function ChatPage() {
     }
   };
 
-  // KAMERA
   const toggleVideo = () => {
     if (streamRef.current) {
       streamRef.current.getVideoTracks().forEach(t => t.enabled = !t.enabled);
@@ -268,7 +251,6 @@ export default function ChatPage() {
   return (
     <div className="h-[100dvh] bg-black overflow-hidden font-sans">
       
-      {/* === HEADER === */}
       <header className="absolute top-0 left-0 right-0 z-30 px-4 py-3 flex items-center justify-between bg-gradient-to-b from-black/80">
         <div className="flex items-center gap-3">
           {status === 'connected' && (
@@ -292,10 +274,8 @@ export default function ChatPage() {
         <UserMenu />
       </header>
 
-      {/* === ANA EKRAN === */}
       <div className="w-full h-full flex items-center justify-center bg-gradient-to-b from-gray-900 to-black">
         
-        {/* UZAK VİDEO */}
         {status === 'connected' ? (
           <video ref={remoteVideo} autoPlay playsInline className="absolute inset-0 w-full h-full object-cover" />
         ) : (
@@ -312,9 +292,7 @@ export default function ChatPage() {
                 <div className="relative w-24 h-24 mx-auto mb-6">
                   <div className="absolute inset-0 rounded-full border-4 border-purple-500/20 animate-ping"></div>
                   <div className="absolute inset-0 rounded-full border-4 border-t-purple-500 border-r-transparent border-b-transparent border-l-transparent animate-spin"></div>
-                  <div className="absolute inset-4 rounded-full bg-purple-500/20 flex items-center justify-center text-3xl">
-                    🔍
-                  </div>
+                  <div className="absolute inset-4 rounded-full bg-purple-500/20 flex items-center justify-center text-3xl">🔍</div>
                 </div>
                 <p className="text-white text-lg font-semibold">Eşleşme Aranıyor</p>
                 <p className="text-gray-400 text-sm mt-1">
@@ -332,7 +310,6 @@ export default function ChatPage() {
           </div>
         )}
 
-        {/* KENDİ VİDEON */}
         {(status === 'searching' || status === 'matched' || status === 'connected') && (
           <div className={`absolute z-20 rounded-2xl overflow-hidden border-2 border-white/20 shadow-2xl transition-all
             ${status === 'connected' ? 'bottom-24 right-3 w-28 h-40' : 'bottom-24 right-3 w-36 h-52'}`}>
@@ -343,11 +320,9 @@ export default function ChatPage() {
         )}
       </div>
 
-      {/* === ALT BUTONLAR === */}
       <div className="absolute bottom-0 left-0 right-0 z-30 bg-gradient-to-t from-black via-black/80 to-transparent pb-8 pt-20">
         <div className="flex items-center justify-center gap-3 md:gap-4 px-4">
           
-          {/* BAŞLAT */}
           {status === 'idle' && (
             <button onClick={startMatch}
               className="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-8 py-4 rounded-full text-lg font-bold 
@@ -356,7 +331,6 @@ export default function ChatPage() {
             </button>
           )}
 
-          {/* ARAMA İPTAL */}
           {status === 'searching' && (
             <button onClick={cancelSearch}
               className="bg-red-500 text-white px-8 py-4 rounded-full text-base font-bold 
@@ -365,7 +339,6 @@ export default function ChatPage() {
             </button>
           )}
 
-          {/* BAĞLANIRKEN İPTAL */}
           {status === 'matched' && (
             <button onClick={cancelSearch}
               className="bg-red-500 text-white px-8 py-4 rounded-full text-base font-bold 
@@ -374,17 +347,14 @@ export default function ChatPage() {
             </button>
           )}
 
-          {/* GÖRÜŞME KONTROLLERİ */}
           {status === 'connected' && (
             <div className="flex items-center gap-4">
-              {/* Mikrofon */}
               <button onClick={toggleMute}
                 className={`w-12 h-12 rounded-full flex items-center justify-center transition-all
                   ${isMuted ? 'bg-red-500' : 'bg-white/10 hover:bg-white/20'}`}>
                 {isMuted ? '🔇' : '🎤'}
               </button>
 
-              {/* Kapat */}
               <button onClick={endCall}
                 className="w-16 h-16 bg-red-500 hover:bg-red-600 rounded-full flex items-center justify-center
                   transition-all hover:scale-110 active:scale-95 shadow-lg shadow-red-500/30">
@@ -393,13 +363,11 @@ export default function ChatPage() {
                 </svg>
               </button>
 
-              {/* Sonraki */}
               <button onClick={nextCall}
                 className="w-12 h-12 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center transition-all">
                 ⏭️
               </button>
 
-              {/* Kamera */}
               <button onClick={toggleVideo}
                 className={`w-12 h-12 rounded-full flex items-center justify-center transition-all
                   ${isVideoOff ? 'bg-red-500' : 'bg-white/10 hover:bg-white/20'}`}>
