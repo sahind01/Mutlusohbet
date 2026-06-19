@@ -89,12 +89,12 @@ export default function ChatPage() {
       // Bekleyenleri dinle
       const waitingRef = ref(db, 'waiting');
       onValue(waitingRef, async (snapshot) => {
-        if (snapshot.exists()) {
+        if (snapshot.exists() && status === 'searching') {
           const data = snapshot.val();
           const keys = Object.keys(data).filter(k => k !== user.id);
           setWaitingCount(keys.length);
           
-          if (keys.length > 0 && status === 'searching') {
+          if (keys.length > 0) {
             const partnerKey = keys[0];
             const partnerData = data[partnerKey];
             
@@ -152,7 +152,7 @@ export default function ChatPage() {
         const sigRef = push(ref(db, `rooms/${roomId}/signals`));
         set(sigRef, {
           type: 'ice',
-          data: e.candidate.toJSON(),
+          data: JSON.parse(JSON.stringify(e.candidate.toJSON())),
           from: user!.id
         });
       }
@@ -174,17 +174,20 @@ export default function ChatPage() {
           if (signal.from === partnerId) {
             try {
               if (signal.type === 'offer') {
-                await pc.setRemoteDescription(signal.data);
+                await pc.setRemoteDescription(new RTCSessionDescription(signal.data));
                 const answer = await pc.createAnswer();
                 await pc.setLocalDescription(answer);
                 const sigRef = push(ref(db, `rooms/${roomId}/signals`));
                 await set(sigRef, {
                   type: 'answer',
-                  data: answer.toJSON(),
+                  data: {
+                    type: answer.type,
+                    sdp: answer.sdp
+                  },
                   from: user!.id
                 });
               } else if (signal.type === 'answer') {
-                await pc.setRemoteDescription(signal.data);
+                await pc.setRemoteDescription(new RTCSessionDescription(signal.data));
               } else if (signal.type === 'ice') {
                 await pc.addIceCandidate(new RTCIceCandidate(signal.data));
               }
@@ -199,7 +202,10 @@ export default function ChatPage() {
     const sigRef = push(ref(db, `rooms/${roomId}/signals`));
     await set(sigRef, {
       type: 'offer',
-      data: offer.toJSON(),
+      data: {
+        type: offer.type,
+        sdp: offer.sdp
+      },
       from: user!.id
     });
   };
