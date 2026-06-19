@@ -1,12 +1,24 @@
 // src/hooks/useAdvertisements.ts
 import { useState, useEffect } from 'react';
-import { db } from '@/lib/firebase';
-import { collection, query, where, getDocs, updateDoc, doc, increment } from 'firebase/firestore';
-import type { Advertisement } from '@/types';
+import { db, ref, get, update } from '@/lib/firebase';
 
-export function useAdvertisements(position?: 'top' | 'bottom' | 'fixed' | 'popup') {
-  const [advertisements, setAdvertisements] = useState<Advertisement[]>([]);
-  const [currentAd, setCurrentAd] = useState<Advertisement | null>(null);
+interface AdData {
+  id: string;
+  name: string;
+  type: string;
+  position: string;
+  imageUrl: string;
+  targetUrl: string;
+  isActive: boolean;
+  impressions: number;
+  clicks: number;
+  startDate: string;
+  endDate: string;
+}
+
+export function useAdvertisements(position?: string) {
+  const [advertisements, setAdvertisements] = useState<AdData[]>([]);
+  const [currentAd, setCurrentAd] = useState<AdData | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -16,30 +28,40 @@ export function useAdvertisements(position?: 'top' | 'bottom' | 'fixed' | 'popup
   const loadAdvertisements = async () => {
     try {
       const now = new Date();
-      const adsRef = collection(db, 'advertisements');
-      let q = query(
-        adsRef,
-        where('isActive', '==', true),
-        where('startDate', '<=', now),
-        where('endDate', '>=', now)
-      );
-
-      if (position) {
-        q = query(q, where('position', '==', position));
-      }
-
-      const snapshot = await getDocs(q);
-      const ads = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Advertisement[];
-
-      setAdvertisements(ads);
+      const adsSnap = await get(ref(db, 'advertisements'));
       
-      // Rastgele bir reklam seç
-      if (ads.length > 0) {
-        const randomAd = ads[Math.floor(Math.random() * ads.length)];
-        setCurrentAd(randomAd);
+      if (adsSnap.exists()) {
+        const data = adsSnap.val();
+        let adsList = Object.keys(data).map(key => ({
+          id: key,
+          ...data[key]
+        }));
+
+        // Aktif ve tarih aralığında olanları filtrele
+        adsList = adsList.filter(ad => {
+          const isActive = ad.isActive === true;
+          const startOk = new Date(ad.startDate) <= now;
+          const endOk = new Date(ad.endDate) >= now;
+          return isActive && startOk && endOk;
+        });
+
+        // Pozisyona göre filtrele
+        if (position) {
+          adsList = adsList.filter(ad => ad.position === position);
+        }
+
+        setAdvertisements(adsList);
+        
+        // Rastgele bir reklam seç
+        if (adsList.length > 0) {
+          const randomAd = adsList[Math.floor(Math.random() * adsList.length)];
+          setCurrentAd(randomAd);
+        } else {
+          setCurrentAd(null);
+        }
+      } else {
+        setAdvertisements([]);
+        setCurrentAd(null);
       }
     } catch (error) {
       console.error('Reklam yükleme hatası:', error);
@@ -50,8 +72,11 @@ export function useAdvertisements(position?: 'top' | 'bottom' | 'fixed' | 'popup
 
   const recordImpression = async (adId: string) => {
     try {
-      await updateDoc(doc(db, 'advertisements', adId), {
-        impressions: increment(1)
+      const adRef = ref(db, `advertisements/${adId}/impressions`);
+      const snap = await get(adRef);
+      const current = snap.exists() ? snap.val() : 0;
+      await update(ref(db, `advertisements/${adId}`), {
+        impressions: (current || 0) + 1
       });
     } catch (error) {
       console.error('Gösterim kaydı hatası:', error);
@@ -60,16 +85,11 @@ export function useAdvertisements(position?: 'top' | 'bottom' | 'fixed' | 'popup
 
   const recordClick = async (adId: string) => {
     try {
-      await updateDoc(doc(db, 'advertisements', adId), {
-        clicks: increment(1)
-      });
-      
-      // İstatistikleri güncelle
-      const today = new Date().toISOString().split('T')[0];
-      const statsRef = doc(db, 'statistics', today);
-      await updateDoc(statsRef, {
-        adClicks: increment(1),
-        adImpressions: increment(1)
+      const adRef = ref(db, `advertisements/${adId}/clicks`);
+      const snap = await get(adRef);
+      const current = snap.exists() ? snap.val() : 0;
+      await update(ref(db, `advertisements/${adId}`), {
+        clicks: (current || 0) + 1
       });
     } catch (error) {
       console.error('Tıklama kaydı hatası:', error);
