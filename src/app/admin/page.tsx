@@ -15,8 +15,7 @@ import {
   orderBy, 
   limit,
   addDoc,
-  deleteDoc,
-  Timestamp 
+  deleteDoc
 } from 'firebase/firestore';
 import type { User as AppUser, Advertisement, Statistics } from '@/types';
 
@@ -34,8 +33,8 @@ export default function AdminPage() {
   // Yeni Reklam Formu
   const [adForm, setAdForm] = useState({
     name: '',
-    type: 'banner',
-    position: 'top',
+    type: 'banner' as 'banner' | 'popup' | 'script',
+    position: 'top' as 'top' | 'bottom' | 'fixed',
     imageUrl: '',
     targetUrl: '',
     startDate: '',
@@ -57,17 +56,74 @@ export default function AdminPage() {
       switch (activeTab) {
         case 'users':
           const usersSnapshot = await getDocs(collection(db, 'users'));
-          setUsers(usersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as AppUser[]);
+          const usersData = usersSnapshot.docs.map(doc => {
+            const data = doc.data();
+            return {
+              id: doc.id,
+              username: data.username || '',
+              email: data.email || '',
+              gender: data.gender || 'other',
+              profilePhoto: data.profilePhoto || '/default-avatar.png',
+              role: data.role || 'free',
+              status: data.status || 'offline',
+              dailyMatches: data.dailyMatches || 0,
+              totalMatches: data.totalMatches || 0,
+              reports: data.reports || [],
+              matchHistory: data.matchHistory || [],
+              createdAt: data.createdAt?.toDate() || new Date(),
+              lastActive: data.lastActive?.toDate() || new Date(),
+              premiumSince: data.premiumSince?.toDate(),
+              premiumExpiry: data.premiumExpiry?.toDate(),
+              bannedUntil: data.bannedUntil?.toDate(),
+              banReason: data.banReason
+            } as AppUser;
+          });
+          setUsers(usersData);
           break;
+
         case 'ads':
           const adsSnapshot = await getDocs(collection(db, 'advertisements'));
-          setAds(adsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Advertisement[]);
+          const adsData = adsSnapshot.docs.map(doc => {
+            const data = doc.data();
+            return {
+              id: doc.id,
+              name: data.name || '',
+              type: data.type || 'banner',
+              position: data.position || 'top',
+              imageUrl: data.imageUrl || '',
+              gifUrl: data.gifUrl || '',
+              targetUrl: data.targetUrl || '',
+              scriptCode: data.scriptCode || '',
+              isActive: data.isActive || false,
+              impressions: data.impressions || 0,
+              clicks: data.clicks || 0,
+              startDate: data.startDate?.toDate() || new Date(),
+              endDate: data.endDate?.toDate() || new Date(),
+              createdBy: data.createdBy || '',
+              customStyles: data.customStyles || {}
+            } as Advertisement;
+          });
+          setAds(adsData);
           break;
+
         case 'stats':
           const statsSnapshot = await getDocs(
             query(collection(db, 'statistics'), orderBy('date', 'desc'), limit(30))
           );
-          setStats(statsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Statistics[]);
+          const statsData = statsSnapshot.docs.map(doc => {
+            const data = doc.data();
+            return {
+              id: doc.id,
+              dailyUsers: data.dailyUsers || 0,
+              dailyMatches: data.dailyMatches || 0,
+              premiumSales: data.premiumSales || 0,
+              adImpressions: data.adImpressions || 0,
+              adClicks: data.adClicks || 0,
+              activeUsers: data.activeUsers || 0,
+              date: data.date?.toDate() || new Date()
+            } as Statistics;
+          });
+          setStats(statsData);
           break;
       }
     } catch (error) {
@@ -79,9 +135,10 @@ export default function AdminPage() {
 
   const handleBanUser = async (userId: string) => {
     try {
+      const reason = prompt('Yasaklama sebebi:') || 'Kurallara uymama';
       await updateDoc(doc(db, 'users', userId), {
         status: 'banned',
-        banReason: prompt('Yasaklama sebebi:') || 'Kurallara uymama',
+        banReason: reason,
         bannedUntil: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 gün
       });
       loadData();
@@ -105,14 +162,24 @@ export default function AdminPage() {
 
   const handleAddAd = async () => {
     try {
-      await addDoc(collection(db, 'advertisements'), {
-        ...adForm,
+      const adData = {
+        name: adForm.name,
+        type: adForm.type,
+        position: adForm.position,
+        imageUrl: adForm.imageUrl,
+        targetUrl: adForm.targetUrl,
+        isActive: adForm.isActive,
         impressions: 0,
         clicks: 0,
         startDate: new Date(adForm.startDate),
         endDate: new Date(adForm.endDate),
-        createdBy: user?.id
-      });
+        createdBy: user?.id || '',
+        scriptCode: '',
+        gifUrl: '',
+        customStyles: {}
+      };
+
+      await addDoc(collection(db, 'advertisements'), adData);
       
       setAdForm({
         name: '',
@@ -126,8 +193,10 @@ export default function AdminPage() {
       });
       
       loadData();
+      alert('Reklam başarıyla eklendi!');
     } catch (error) {
       console.error('Reklam ekleme hatası:', error);
+      alert('Reklam eklenirken bir hata oluştu!');
     }
   };
 
@@ -153,16 +222,40 @@ export default function AdminPage() {
     }
   };
 
+  const handleMakePremium = async (userId: string) => {
+    try {
+      const days = prompt('Premium süresi (gün):', '30');
+      if (!days) return;
+      
+      await updateDoc(doc(db, 'users', userId), {
+        role: 'premium',
+        premiumSince: new Date(),
+        premiumExpiry: new Date(Date.now() + parseInt(days) * 24 * 60 * 60 * 1000)
+      });
+      loadData();
+    } catch (error) {
+      console.error('Premium yapma hatası:', error);
+    }
+  };
+
   if (!user || user.role !== 'admin') return null;
 
   return (
     <div className="min-h-screen bg-gray-900 text-white">
       {/* Sidebar */}
-      <div className="flex">
-        <div className="w-64 bg-gray-800 min-h-screen p-6">
-          <h1 className="text-2xl font-bold mb-8 bg-gradient-to-r from-purple-400 to-pink-400 text-transparent bg-clip-text">
-            Admin Panel
-          </h1>
+      <div className="flex flex-col md:flex-row">
+        <div className="w-full md:w-64 bg-gray-800 min-h-screen p-6">
+          <div className="flex items-center justify-between mb-8">
+            <h1 className="text-2xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 text-transparent bg-clip-text">
+              Admin Panel
+            </h1>
+            <button
+              onClick={() => router.push('/')}
+              className="md:hidden text-gray-400 hover:text-white"
+            >
+              Ana Sayfa
+            </button>
+          </div>
           
           <nav className="space-y-2">
             {[
@@ -188,7 +281,7 @@ export default function AdminPage() {
         </div>
 
         {/* Ana İçerik */}
-        <div className="flex-1 p-8">
+        <div className="flex-1 p-4 md:p-8 overflow-x-auto">
           {loading ? (
             <div className="flex items-center justify-center h-64">
               <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500"></div>
@@ -198,69 +291,94 @@ export default function AdminPage() {
               {/* Kullanıcı Yönetimi */}
               {activeTab === 'users' && (
                 <div>
-                  <h2 className="text-3xl font-bold mb-8">Kullanıcı Yönetimi</h2>
+                  <div className="flex items-center justify-between mb-8">
+                    <h2 className="text-2xl md:text-3xl font-bold">Kullanıcı Yönetimi</h2>
+                    <span className="text-gray-400">{users.length} kullanıcı</span>
+                  </div>
                   
-                  <div className="bg-gray-800 rounded-xl overflow-hidden">
-                    <table className="w-full">
+                  <div className="bg-gray-800 rounded-xl overflow-x-auto">
+                    <table className="w-full min-w-[800px]">
                       <thead>
                         <tr className="border-b border-gray-700">
-                          <th className="py-4 px-6 text-left">Kullanıcı</th>
-                          <th className="py-4 px-6 text-left">E-posta</th>
-                          <th className="py-4 px-6 text-left">Durum</th>
-                          <th className="py-4 px-6 text-left">Üyelik</th>
-                          <th className="py-4 px-6 text-left">İşlemler</th>
+                          <th className="py-4 px-4 text-left">Kullanıcı</th>
+                          <th className="py-4 px-4 text-left">E-posta</th>
+                          <th className="py-4 px-4 text-left">Durum</th>
+                          <th className="py-4 px-4 text-left">Üyelik</th>
+                          <th className="py-4 px-4 text-left">Eşleşme</th>
+                          <th className="py-4 px-4 text-left">İşlemler</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {users.map((u) => (
-                          <tr key={u.id} className="border-b border-gray-700 hover:bg-gray-750">
-                            <td className="py-4 px-6">
-                              <div className="flex items-center space-x-3">
-                                <img
-                                  src={u.profilePhoto}
-                                  alt={u.username}
-                                  className="w-10 h-10 rounded-full"
-                                />
-                                <span>{u.username}</span>
-                              </div>
-                            </td>
-                            <td className="py-4 px-6">{u.email}</td>
-                            <td className="py-4 px-6">
-                              <span className={`px-2 py-1 rounded-full text-xs ${
-                                u.status === 'online' ? 'bg-green-600' :
-                                u.status === 'offline' ? 'bg-gray-600' :
-                                u.status === 'banned' ? 'bg-red-600' :
-                                'bg-blue-600'
-                              }`}>
-                                {u.status}
-                              </span>
-                            </td>
-                            <td className="py-4 px-6">
-                              <span className={`px-2 py-1 rounded-full text-xs ${
-                                u.role === 'premium' ? 'bg-yellow-600' : 'bg-gray-600'
-                              }`}>
-                                {u.role}
-                              </span>
-                            </td>
-                            <td className="py-4 px-6 space-x-2">
-                              {u.status === 'banned' ? (
-                                <button
-                                  onClick={() => handleUnbanUser(u.id)}
-                                  className="bg-green-600 px-3 py-1 rounded-lg hover:bg-green-700 transition-colors"
-                                >
-                                  Yasak Kaldır
-                                </button>
-                              ) : (
-                                <button
-                                  onClick={() => handleBanUser(u.id)}
-                                  className="bg-red-600 px-3 py-1 rounded-lg hover:bg-red-700 transition-colors"
-                                >
-                                  Yasakla
-                                </button>
-                              )}
+                        {users.length === 0 ? (
+                          <tr>
+                            <td colSpan={6} className="py-8 text-center text-gray-400">
+                              Henüz kullanıcı bulunmuyor
                             </td>
                           </tr>
-                        ))}
+                        ) : (
+                          users.map((u) => (
+                            <tr key={u.id} className="border-b border-gray-700 hover:bg-gray-750">
+                              <td className="py-4 px-4">
+                                <div className="flex items-center space-x-3">
+                                  <div className="w-8 h-8 md:w-10 md:h-10 rounded-full bg-purple-600 flex items-center justify-center flex-shrink-0">
+                                    <span className="text-white font-bold text-sm">
+                                      {u.username?.[0]?.toUpperCase() || '?'}
+                                    </span>
+                                  </div>
+                                  <span className="text-sm md:text-base truncate max-w-[120px] md:max-w-none">
+                                    {u.username}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="py-4 px-4 text-sm">{u.email}</td>
+                              <td className="py-4 px-4">
+                                <span className={`px-2 py-1 rounded-full text-xs ${
+                                  u.status === 'online' ? 'bg-green-600' :
+                                  u.status === 'offline' ? 'bg-gray-600' :
+                                  u.status === 'banned' ? 'bg-red-600' :
+                                  'bg-blue-600'
+                                }`}>
+                                  {u.status}
+                                </span>
+                              </td>
+                              <td className="py-4 px-4">
+                                <span className={`px-2 py-1 rounded-full text-xs ${
+                                  u.role === 'premium' ? 'bg-yellow-600' : 'bg-gray-600'
+                                }`}>
+                                  {u.role}
+                                </span>
+                              </td>
+                              <td className="py-4 px-4 text-sm">{u.totalMatches || 0}</td>
+                              <td className="py-4 px-4">
+                                <div className="flex flex-wrap gap-2">
+                                  {u.role !== 'premium' && (
+                                    <button
+                                      onClick={() => handleMakePremium(u.id)}
+                                      className="bg-yellow-600 px-2 py-1 rounded-lg text-xs hover:bg-yellow-700 transition-colors"
+                                    >
+                                      Premium Yap
+                                    </button>
+                                  )}
+                                  {u.status === 'banned' ? (
+                                    <button
+                                      onClick={() => handleUnbanUser(u.id)}
+                                      className="bg-green-600 px-2 py-1 rounded-lg text-xs hover:bg-green-700 transition-colors"
+                                    >
+                                      Yasak Kaldır
+                                    </button>
+                                  ) : (
+                                    <button
+                                      onClick={() => handleBanUser(u.id)}
+                                      className="bg-red-600 px-2 py-1 rounded-lg text-xs hover:bg-red-700 transition-colors"
+                                    >
+                                      Yasakla
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          ))
+                        )}
                       </tbody>
                     </table>
                   </div>
@@ -270,124 +388,158 @@ export default function AdminPage() {
               {/* Reklam Yönetimi */}
               {activeTab === 'ads' && (
                 <div>
-                  <h2 className="text-3xl font-bold mb-8">Reklam Yönetimi</h2>
+                  <h2 className="text-2xl md:text-3xl font-bold mb-8">Reklam Yönetimi</h2>
                   
                   {/* Yeni Reklam Ekleme Formu */}
-                  <div className="bg-gray-800 rounded-xl p-6 mb-8">
+                  <div className="bg-gray-800 rounded-xl p-4 md:p-6 mb-8">
                     <h3 className="text-xl font-semibold mb-4">Yeni Reklam Ekle</h3>
                     
                     <div className="grid md:grid-cols-2 gap-4">
-                      <input
-                        type="text"
-                        placeholder="Reklam Adı"
-                        value={adForm.name}
-                        onChange={(e) => setAdForm({ ...adForm, name: e.target.value })}
-                        className="bg-gray-700 rounded-lg px-4 py-2"
-                      />
+                      <div>
+                        <label className="block text-sm text-gray-400 mb-1">Reklam Adı</label>
+                        <input
+                          type="text"
+                          placeholder="Reklam Adı"
+                          value={adForm.name}
+                          onChange={(e) => setAdForm({ ...adForm, name: e.target.value })}
+                          className="w-full bg-gray-700 rounded-lg px-4 py-2 text-white"
+                        />
+                      </div>
                       
-                      <select
-                        value={adForm.type}
-                        onChange={(e) => setAdForm({ ...adForm, type: e.target.value })}
-                        className="bg-gray-700 rounded-lg px-4 py-2"
-                      >
-                        <option value="banner">Banner</option>
-                        <option value="popup">Popup</option>
-                        <option value="script">Script</option>
-                      </select>
+                      <div>
+                        <label className="block text-sm text-gray-400 mb-1">Reklam Türü</label>
+                        <select
+                          value={adForm.type}
+                          onChange={(e) => setAdForm({ ...adForm, type: e.target.value as any })}
+                          className="w-full bg-gray-700 rounded-lg px-4 py-2 text-white"
+                        >
+                          <option value="banner">Banner</option>
+                          <option value="popup">Popup</option>
+                          <option value="script">Script</option>
+                        </select>
+                      </div>
                       
                       {adForm.type !== 'script' && (
                         <>
-                          <select
-                            value={adForm.position}
-                            onChange={(e) => setAdForm({ ...adForm, position: e.target.value })}
-                            className="bg-gray-700 rounded-lg px-4 py-2"
-                          >
-                            <option value="top">Üst</option>
-                            <option value="bottom">Alt</option>
-                            <option value="fixed">Sabit</option>
-                          </select>
+                          <div>
+                            <label className="block text-sm text-gray-400 mb-1">Pozisyon</label>
+                            <select
+                              value={adForm.position}
+                              onChange={(e) => setAdForm({ ...adForm, position: e.target.value as any })}
+                              className="w-full bg-gray-700 rounded-lg px-4 py-2 text-white"
+                            >
+                              <option value="top">Üst</option>
+                              <option value="bottom">Alt</option>
+                              <option value="fixed">Sabit</option>
+                            </select>
+                          </div>
                           
-                          <input
-                            type="text"
-                            placeholder="Görsel URL"
-                            value={adForm.imageUrl}
-                            onChange={(e) => setAdForm({ ...adForm, imageUrl: e.target.value })}
-                            className="bg-gray-700 rounded-lg px-4 py-2"
-                          />
+                          <div>
+                            <label className="block text-sm text-gray-400 mb-1">Görsel URL</label>
+                            <input
+                              type="text"
+                              placeholder="https://..."
+                              value={adForm.imageUrl}
+                              onChange={(e) => setAdForm({ ...adForm, imageUrl: e.target.value })}
+                              className="w-full bg-gray-700 rounded-lg px-4 py-2 text-white"
+                            />
+                          </div>
                         </>
                       )}
                       
-                      <input
-                        type="text"
-                        placeholder="Hedef Link"
-                        value={adForm.targetUrl}
-                        onChange={(e) => setAdForm({ ...adForm, targetUrl: e.target.value })}
-                        className="bg-gray-700 rounded-lg px-4 py-2"
-                      />
+                      <div>
+                        <label className="block text-sm text-gray-400 mb-1">Hedef Link</label>
+                        <input
+                          type="text"
+                          placeholder="https://..."
+                          value={adForm.targetUrl}
+                          onChange={(e) => setAdForm({ ...adForm, targetUrl: e.target.value })}
+                          className="w-full bg-gray-700 rounded-lg px-4 py-2 text-white"
+                        />
+                      </div>
                       
-                      <input
-                        type="datetime-local"
-                        value={adForm.startDate}
-                        onChange={(e) => setAdForm({ ...adForm, startDate: e.target.value })}
-                        className="bg-gray-700 rounded-lg px-4 py-2"
-                      />
+                      <div>
+                        <label className="block text-sm text-gray-400 mb-1">Başlangıç Tarihi</label>
+                        <input
+                          type="datetime-local"
+                          value={adForm.startDate}
+                          onChange={(e) => setAdForm({ ...adForm, startDate: e.target.value })}
+                          className="w-full bg-gray-700 rounded-lg px-4 py-2 text-white"
+                        />
+                      </div>
                       
-                      <input
-                        type="datetime-local"
-                        value={adForm.endDate}
-                        onChange={(e) => setAdForm({ ...adForm, endDate: e.target.value })}
-                        className="bg-gray-700 rounded-lg px-4 py-2"
-                      />
+                      <div>
+                        <label className="block text-sm text-gray-400 mb-1">Bitiş Tarihi</label>
+                        <input
+                          type="datetime-local"
+                          value={adForm.endDate}
+                          onChange={(e) => setAdForm({ ...adForm, endDate: e.target.value })}
+                          className="w-full bg-gray-700 rounded-lg px-4 py-2 text-white"
+                        />
+                      </div>
                     </div>
                     
                     <button
                       onClick={handleAddAd}
-                      className="mt-4 bg-gradient-to-r from-purple-600 to-pink-600 text-white px-6 py-2 rounded-lg hover:from-purple-700 hover:to-pink-700 transition-all"
+                      disabled={!adForm.name || !adForm.startDate || !adForm.endDate}
+                      className="mt-4 bg-gradient-to-r from-purple-600 to-pink-600 text-white px-6 py-2 rounded-lg hover:from-purple-700 hover:to-pink-700 transition-all disabled:opacity-50"
                     >
                       Reklam Ekle
                     </button>
                   </div>
 
                   {/* Mevcut Reklamlar */}
-                  <div className="bg-gray-800 rounded-xl overflow-hidden">
-                    <table className="w-full">
+                  <div className="bg-gray-800 rounded-xl overflow-x-auto">
+                    <table className="w-full min-w-[800px]">
                       <thead>
                         <tr className="border-b border-gray-700">
-                          <th className="py-4 px-6 text-left">Reklam</th>
-                          <th className="py-4 px-6 text-left">Tür</th>
-                          <th className="py-4 px-6 text-left">Gösterim</th>
-                          <th className="py-4 px-6 text-left">Tıklama</th>
-                          <th className="py-4 px-6 text-left">Durum</th>
-                          <th className="py-4 px-6 text-left">İşlemler</th>
+                          <th className="py-4 px-4 text-left">Reklam</th>
+                          <th className="py-4 px-4 text-left">Tür</th>
+                          <th className="py-4 px-4 text-left">Gösterim</th>
+                          <th className="py-4 px-4 text-left">Tıklama</th>
+                          <th className="py-4 px-4 text-left">Tarih</th>
+                          <th className="py-4 px-4 text-left">Durum</th>
+                          <th className="py-4 px-4 text-left">İşlemler</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {ads.map((ad) => (
-                          <tr key={ad.id} className="border-b border-gray-700">
-                            <td className="py-4 px-6">{ad.name}</td>
-                            <td className="py-4 px-6">{ad.type}</td>
-                            <td className="py-4 px-6">{ad.impressions}</td>
-                            <td className="py-4 px-6">{ad.clicks}</td>
-                            <td className="py-4 px-6">
-                              <button
-                                onClick={() => handleToggleAdStatus(ad.id, ad.isActive)}
-                                className={`px-2 py-1 rounded-full text-xs ${
-                                  ad.isActive ? 'bg-green-600' : 'bg-red-600'
-                                }`}
-                              >
-                                {ad.isActive ? 'Aktif' : 'Pasif'}
-                              </button>
-                            </td>
-                            <td className="py-4 px-6">
-                              <button
-                                onClick={() => handleDeleteAd(ad.id)}
-                                className="bg-red-600 px-3 py-1 rounded-lg hover:bg-red-700 transition-colors"
-                              >
-                                Sil
-                              </button>
+                        {ads.length === 0 ? (
+                          <tr>
+                            <td colSpan={7} className="py-8 text-center text-gray-400">
+                              Henüz reklam eklenmemiş
                             </td>
                           </tr>
-                        ))}
+                        ) : (
+                          ads.map((ad) => (
+                            <tr key={ad.id} className="border-b border-gray-700">
+                              <td className="py-4 px-4 text-sm">{ad.name}</td>
+                              <td className="py-4 px-4 text-sm">{ad.type}</td>
+                              <td className="py-4 px-4 text-sm">{ad.impressions.toLocaleString()}</td>
+                              <td className="py-4 px-4 text-sm">{ad.clicks.toLocaleString()}</td>
+                              <td className="py-4 px-4 text-xs">
+                                {ad.startDate.toLocaleDateString('tr-TR')} - {ad.endDate.toLocaleDateString('tr-TR')}
+                              </td>
+                              <td className="py-4 px-4">
+                                <button
+                                  onClick={() => handleToggleAdStatus(ad.id, ad.isActive)}
+                                  className={`px-2 py-1 rounded-full text-xs ${
+                                    ad.isActive ? 'bg-green-600' : 'bg-red-600'
+                                  }`}
+                                >
+                                  {ad.isActive ? 'Aktif' : 'Pasif'}
+                                </button>
+                              </td>
+                              <td className="py-4 px-4">
+                                <button
+                                  onClick={() => handleDeleteAd(ad.id)}
+                                  className="bg-red-600 px-2 py-1 rounded-lg text-xs hover:bg-red-700 transition-colors"
+                                >
+                                  Sil
+                                </button>
+                              </td>
+                            </tr>
+                          ))
+                        )}
                       </tbody>
                     </table>
                   </div>
@@ -397,9 +549,9 @@ export default function AdminPage() {
               {/* İstatistikler */}
               {activeTab === 'stats' && (
                 <div>
-                  <h2 className="text-3xl font-bold mb-8">İstatistikler</h2>
+                  <h2 className="text-2xl md:text-3xl font-bold mb-8">İstatistikler</h2>
                   
-                  <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-8">
                     <StatCard
                       title="Günlük Kullanıcı"
                       value={stats[0]?.dailyUsers || 0}
@@ -432,32 +584,21 @@ export default function AdminPage() {
                     />
                   </div>
 
-                  {/* İstatistik Tablosu */}
-                  <div className="bg-gray-800 rounded-xl overflow-hidden">
-                    <table className="w-full">
-                      <thead>
-                        <tr className="border-b border-gray-700">
-                          <th className="py-4 px-6 text-left">Tarih</th>
-                          <th className="py-4 px-6 text-left">Kullanıcı</th>
-                          <th className="py-4 px-6 text-left">Eşleşme</th>
-                          <th className="py-4 px-6 text-left">Premium</th>
-                          <th className="py-4 px-6 text-left">Reklam Gösterim</th>
-                          <th className="py-4 px-6 text-left">Reklam Tıklama</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {stats.map((stat) => (
-                          <tr key={stat.id} className="border-b border-gray-700">
-                            <td className="py-4 px-6">{new Date(stat.date).toLocaleDateString('tr-TR')}</td>
-                            <td className="py-4 px-6">{stat.dailyUsers}</td>
-                            <td className="py-4 px-6">{stat.dailyMatches}</td>
-                            <td className="py-4 px-6">{stat.premiumSales}</td>
-                            <td className="py-4 px-6">{stat.adImpressions}</td>
-                            <td className="py-4 px-6">{stat.adClicks}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <div className="bg-gray-800 rounded-xl p-6 text-center text-gray-400">
+                    <p className="text-2xl mb-2">📊</p>
+                    <p>Detaylı istatistikler için veritabanına veri girişi yapılması gerekmektedir.</p>
+                    <p className="mt-2 text-sm">Firebase Console'dan statistics koleksiyonuna veri ekleyebilirsiniz.</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Şikayetler */}
+              {activeTab === 'reports' && (
+                <div>
+                  <h2 className="text-2xl md:text-3xl font-bold mb-8">Şikayetler</h2>
+                  <div className="bg-gray-800 rounded-xl p-6 text-center text-gray-400">
+                    <p className="text-2xl mb-2">🚨</p>
+                    <p>Henüz şikayet bulunmamaktadır.</p>
                   </div>
                 </div>
               )}
@@ -471,9 +612,9 @@ export default function AdminPage() {
 
 function StatCard({ title, value, color }: { title: string; value: number; color: string }) {
   return (
-    <div className={`${color} rounded-xl p-6`}>
-      <p className="text-lg opacity-90">{title}</p>
-      <p className="text-3xl font-bold">{value.toLocaleString()}</p>
+    <div className={`${color} rounded-xl p-4 md:p-6`}>
+      <p className="text-sm md:text-lg opacity-90">{title}</p>
+      <p className="text-2xl md:text-3xl font-bold">{value.toLocaleString()}</p>
     </div>
   );
 }
