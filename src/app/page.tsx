@@ -3,51 +3,123 @@
 
 import { useState } from 'react';
 import { useAuth } from '@/lib/context/AuthContext';
-import { useAdvertisements } from '@/hooks/useAdvertisements';
 import Link from 'next/link';
-import Image from 'next/image';
+import UserMenu from '@/components/UserMenu';
 
 export default function HomePage() {
   const { user } = useAuth();
-  const { currentAd: topBannerAd, recordImpression: recordTopImpression } = useAdvertisements('top');
-  const { currentAd: bottomBannerAd, recordImpression: recordBottomImpression } = useAdvertisements('bottom');
-  const [showPremiumModal, setShowPremiumModal] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 text-white">
-      {/* Üst Banner Reklam */}
-      {!user?.role || user?.role === 'free' ? (
-        <div className="bg-gradient-to-r from-purple-600 to-pink-600 p-4">
-          {topBannerAd ? (
-            <div className="container mx-auto flex items-center justify-between">
-              <a 
-                href={topBannerAd.targetUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={() => recordTopImpression(topBannerAd.id)}
-                className="flex-1 text-center hover:opacity-90 transition-opacity"
-              >
-                {topBannerAd.imageUrl && (
-                  <Image
-                    src={topBannerAd.imageUrl}
-                    alt={topBannerAd.name}
-                    width={728}
-                    height={90}
-                    className="mx-auto rounded-lg"
-                  />
-                )}
-              </a>
-              <button className="ml-4 bg-yellow-400 text-black px-6 py-2 rounded-full font-bold hover:bg-yellow-300 transition-colors">
-                Premium'a Geç - Reklamsız Deneyim
-              </button>
-            </div>
-          ) : (
-            <div className="text-center py-2">
-              <span className="text-yellow-300">🌟 Premium üyelik ile reklamsız sohbet keyfi!</span>
-            </div>
-          )}
+      {/* Header */}
+      <header className="border-b border-gray-700">
+        <div className="container mx-auto px-4 py-3 flex items-center justify-between">
+          <Link href="/" className="text-2xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 text-transparent bg-clip-text">
+            Mutlu Sohbet
+          </Link>
+
+          {/* Mobil Menü Butonu */}
+          <button 
+            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+            className="md:hidden text-gray-400 hover:text-white"
+          >
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+
+          {/* Desktop Menü */}
+          <div className="hidden md:flex items-center space-x-4">
+            {user ? (
+              <>
+                <Link href="/chat" className="text-gray-300 hover:text-white transition-colors">
+                  Sohbete Başla
+                </Link>
+                <UserMenu />
+              </>
+            ) : (
+              <>
+                <Link href="/auth/login" className="text-gray-300 hover:text-white transition-colors">
+                  Giriş Yap
+                </Link>
+                <Link
+                  href="/auth/register"
+                  className="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-4 py-2 rounded-lg hover:from-purple-700 hover:to-pink-700 transition-all"
+                >
+                  Kayıt Ol
+                </Link>
+              </>
+            )}
+          </div>
         </div>
-      ) : null}
+
+        {/* Mobil Menü */}
+        {mobileMenuOpen && (
+          <div className="md:hidden bg-gray-800 border-t border-gray-700 px-4 py-3">
+            {user ? (
+              <div className="space-y-2">
+                <Link 
+                  href="/chat" 
+                  className="block text-gray-300 hover:text-white py-2"
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  💬 Sohbete Başla
+                </Link>
+                <Link 
+                  href="/profile" 
+                  className="block text-gray-300 hover:text-white py-2"
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  👤 Profilim
+                </Link>
+                {user.role === 'admin' && (
+                  <Link 
+                    href="/admin" 
+                    className="block text-purple-400 hover:text-purple-300 py-2"
+                    onClick={() => setMobileMenuOpen(false)}
+                  >
+                    ⚙️ Admin Panel
+                  </Link>
+                )}
+                <Link 
+                  href="/settings" 
+                  className="block text-gray-300 hover:text-white py-2"
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  ⚙️ Ayarlar
+                </Link>
+                <button 
+                  onClick={() => {
+                    useAuth().logout();
+                    setMobileMenuOpen(false);
+                  }}
+                  className="block text-red-400 hover:text-red-300 py-2 w-full text-left"
+                >
+                  🚪 Çıkış Yap
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <Link 
+                  href="/auth/login" 
+                  className="block text-gray-300 hover:text-white py-2"
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  Giriş Yap
+                </Link>
+                <Link 
+                  href="/auth/register" 
+                  className="block text-purple-400 hover:text-purple-300 py-2"
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  Kayıt Ol
+                </Link>
+              </div>
+            )}
+          </div>
+        )}
+      </header>
 
       {/* Ana İçerik */}
       <div className="container mx-auto px-4 py-16">
@@ -96,54 +168,11 @@ export default function HomePage() {
 
         {/* Özellikler */}
         <div className="grid md:grid-cols-3 gap-8 mt-16">
-          <FeatureCard
-            icon="🎥"
-            title="HD Görüntülü Sohbet"
-            description="Kristal netliğinde görüntü kalitesiyle yüz yüze sohbet deneyimi"
-          />
-          <FeatureCard
-            icon="🌍"
-            title="Küresel Topluluk"
-            description="Dünyanın dört bir yanından milyonlarca kullanıcıyla tanış"
-          />
-          <FeatureCard
-            icon="⚡"
-            title="Hızlı Eşleşme"
-            description="Saniyeler içinde rastgele kullanıcılarla eşleş, hemen sohbete başla"
-          />
+          <FeatureCard icon="🎥" title="HD Görüntülü Sohbet" description="Kristal netliğinde görüntü kalitesiyle yüz yüze sohbet deneyimi" />
+          <FeatureCard icon="🌍" title="Küresel Topluluk" description="Dünyanın dört bir yanından milyonlarca kullanıcıyla tanış" />
+          <FeatureCard icon="⚡" title="Hızlı Eşleşme" description="Saniyeler içinde rastgele kullanıcılarla eşleş, hemen sohbete başla" />
         </div>
       </div>
-
-      {/* Premium Modal */}
-      {showPremiumModal && (
-        <PremiumModal onClose={() => setShowPremiumModal(false)} />
-      )}
-
-      {/* Alt Banner Reklam */}
-      {(!user?.role || user?.role === 'free') && bottomBannerAd && (
-        <div className="fixed bottom-0 left-0 right-0 bg-gray-900 p-4">
-          <div className="container mx-auto flex items-center justify-between">
-            <a
-              href={bottomBannerAd.targetUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={() => recordBottomImpression(bottomBannerAd.id)}
-              className="flex-1"
-            >
-              {bottomBannerAd.imageUrl && (
-                <Image
-                  src={bottomBannerAd.imageUrl}
-                  alt={bottomBannerAd.name}
-                  width={728}
-                  height={90}
-                  className="mx-auto rounded-lg"
-                />
-              )}
-            </a>
-            <button className="ml-4 text-gray-400 hover:text-white">✕</button>
-          </div>
-        </div>
-      )}
     </main>
   );
 }
@@ -155,63 +184,5 @@ function FeatureCard({ icon, title, description }: { icon: string; title: string
       <h3 className="text-xl font-semibold mb-2">{title}</h3>
       <p className="text-gray-400">{description}</p>
     </div>
-  );
-}
-
-function PremiumModal({ onClose }: { onClose: () => void }) {
-  const premiumPackages = [
-    { name: 'Aylık', price: '49.99 TL', duration: '30 gün' },
-    { name: '3 Aylık', price: '129.99 TL', duration: '90 gün', popular: true },
-    { name: 'Yıllık', price: '399.99 TL', duration: '365 gün', bestValue: true }
-  ];
-
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
-      <div className="bg-gray-800 rounded-2xl p-8 max-w-2xl w-full mx-4">
-        <div className="flex justify-between items-center mb-8">
-          <h2 className="text-3xl font-bold">Premium Üyelik</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl">✕</button>
-        </div>
-        
-        <div className="grid md:grid-cols-3 gap-6">
-          {premiumPackages.map((pkg, index) => (
-            <div key={index} className={`bg-gray-700 p-6 rounded-xl text-center relative ${pkg.popular ? 'ring-2 ring-yellow-400' : ''} ${pkg.bestValue ? 'ring-2 ring-green-400' : ''}`}>
-              {pkg.popular && (
-                <span className="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-yellow-400 text-black px-3 py-1 rounded-full text-sm">Popüler</span>
-              )}
-              {pkg.bestValue && (
-                <span className="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-green-400 text-black px-3 py-1 rounded-full text-sm">En Avantajlı</span>
-              )}
-              <h3 className="text-xl font-bold mb-2">{pkg.name}</h3>
-              <p className="text-3xl font-bold text-purple-400 mb-2">{pkg.price}</p>
-              <p className="text-gray-400 text-sm mb-4">{pkg.duration}</p>
-              <button className="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white py-2 rounded-lg font-semibold hover:from-purple-700 hover:to-pink-700 transition-all">
-                Seç
-              </button>
-            </div>
-          ))}
-        </div>
-
-        <div className="mt-8 space-y-3">
-          <h3 className="text-xl font-semibold">Premium Avantajları:</h3>
-          <ul className="space-y-2">
-            <PremiumFeature text="Sınırsız eşleşme hakkı" />
-            <PremiumFeature text="Reklamsız kullanım" />
-            <PremiumFeature text="Premium rozet" />
-            <PremiumFeature text="Öncelikli eşleşme" />
-            <PremiumFeature text="HD görüntü kalitesi" />
-          </ul>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PremiumFeature({ text }: { text: string }) {
-  return (
-    <li className="flex items-center space-x-2">
-      <span className="text-green-400">✓</span>
-      <span>{text}</span>
-    </li>
   );
 }
