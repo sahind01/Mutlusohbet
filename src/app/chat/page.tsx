@@ -12,22 +12,24 @@ import {
   deleteDoc, 
   onSnapshot, 
   collection,
+  getDocs,
   query,
   where,
-  getDocs,
-  increment,
-  addDoc,
   serverTimestamp,
-  getDoc
+  getDoc,
+  addDoc,
+  limit
 } from 'firebase/firestore';
 import UserMenu from '@/components/UserMenu';
 
-// WebRTC yapılandırması
-const rtcConfig = {
+// STUN sunucuları - ücretsiz
+const iceServers = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' }
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' }
   ]
 };
 
@@ -35,605 +37,596 @@ export default function ChatPage() {
   const { user, updateUserStatus } = useAuth();
   const router = useRouter();
   
-  // State'ler
-  const [isSearching, setIsSearching] = useState(false);
-  const [isConnected, setIsConnected] = useState(false);
+  const [appState, setAppState] = useState<'idle' | 'searching' | 'connecting' | 'connected'>('idle');
+  const [partner, setPartner] = useState<any>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
-  const [partnerInfo, setPartnerInfo] = useState<any>(null);
+  const [callTime, setCallTime] = useState(0);
   const [error, setError] = useState('');
-  const [showPreAd, setShowPreAd] = useState(false);
-  const [adWatched, setAdWatched] = useState(false);
-  const [callDuration, setCallDuration] = useState(0);
-  const [matchPoolCount, setMatchPoolCount] = useState(0);
+  const [poolSize, setPoolSize] = useState(0);
   
-  // Refs
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
-  const localStreamRef = useRef<MediaStream | null>(null);
-  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
-  const matchDocRef = useRef<string | null>(null);
-  const roomDocRef = useRef<string | null>(null);
-  const callTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const unsubscribeRef = useRef<(() => void) | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const roomIdRef = useRef<string | null>(null);
+  const partnerIdRef = useRef<string | null>(null);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const unsubscribersRef = useRef<(() => void)[]>([]);
 
-  // Medya akışını başlat
-  const startLocalStream = useCallback(async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          facingMode: 'user'
-        },
-        audio: true
-      });
-      
-      localStreamRef.current = stream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-      }
-      return stream;
-    } catch (err) {
-      console.error('Kamera/Mikrofon erişimi hatası:', err);
-      setError('Kamera ve mikrofona erişilemedi. Lütfen izinleri kontrol edin.');
-      throw err;
-    }
-  }, []);
-
-  // Medya akışını durdur
-  const stopLocalStream = () => {
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(track => track.stop());
-      localStreamRef.current = null;
-    }
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = null;
-    }
-  };
-
-  // WebRTC bağlantısını oluştur
-  const createPeerConnection = useCallback((roomId: string) => {
-    const pc = new RTCPeerConnection(rtcConfig);
-    
-    // ICE adayları
-    pc.onicecandidate = async (event) => {
-      if (event.candidate && roomDocRef.current) {
-        const roomRef = doc(db, 'rooms', roomDocRef.current);
-        await updateDoc(roomRef, {
-          [`candidates.${user?.id}`]: event.candidate.toJSON()
-        });
-      }
-    };
-
-    // Uzak akış geldiğinde
-    pc.ontrack = (event) => {
-      if (remoteVideoRef.current && event.streams[0]) {
-        remoteVideoRef.current.srcObject = event.streams[0];
-        setIsConnected(true);
-        startCallTimer();
-      }
-    };
-
-    // Bağlantı durumu
-    pc.onconnectionstatechange = () => {
-      console.log('Bağlantı durumu:', pc.connectionState);
-      if (pc.connectionState === 'disconnected' || 
-          pc.connectionState === 'failed' || 
-          pc.connectionState === 'closed') {
-        handleEndCall();
-      }
-    };
-
-    // ICE bağlantı durumu
-    pc.oniceconnectionstatechange = () => {
-      console.log('ICE durumu:', pc.iceConnectionState);
-      if (pc.iceConnectionState === 'disconnected' || 
-          pc.iceConnectionState === 'failed') {
-        handleEndCall();
-      }
-    };
-
-    // Lokal akışı ekle
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(track => {
-        if (localStreamRef.current) {
-          pc.addTrack(track, localStreamRef.current);
-        }
-      });
-    }
-
-    peerConnectionRef.current = pc;
-    return pc;
-  }, [user?.id]);
-
-  // Eşleşme havuzuna katıl
-  const joinMatchPool = async () => {
-    if (!user) return;
-    
-    setIsSearching(true);
-    setError('');
-    
-    try {
-      await startLocalStream();
-      
-      // Eşleşme havuzuna ekle
-      const matchRef = doc(db, 'matchPool', user.id);
-      await setDoc(matchRef, {
-        userId: user.id,
-        username: user.username,
-        profilePhoto: user.profilePhoto,
-        gender: user.gender,
-        role: user.role,
-        timestamp: serverTimestamp(),
-        status: 'waiting',
-        isActive: true
-      });
-      
-      matchDocRef.current = user.id;
-      
-      // Eşleşme havuzunu dinle
-      const unsubscribe = onSnapshot(doc(db, 'matchPool', user.id), async (snapshot) => {
-        if (snapshot.exists()) {
-          const data = snapshot.data();
-          
-          if (data.status === 'matched' && data.partnerId) {
-            // Eşleşme bulundu!
-            setIsSearching(false);
-            await startCall(data.partnerId, data.roomId);
-          }
-        }
-      });
-      
-      unsubscribeRef.current = unsubscribe;
-      
-      // Diğer bekleyenleri kontrol et
-      checkForPartners();
-      
-    } catch (err) {
-      console.error('Eşleşme havuzuna katılma hatası:', err);
-      setIsSearching(false);
-      setError('Eşleşme başlatılamadı. Lütfen tekrar deneyin.');
-    }
-  };
-
-  // Diğer bekleyen kullanıcıları kontrol et
-  const checkForPartners = async () => {
-    if (!user) return;
-    
-    try {
-      const poolRef = collection(db, 'matchPool');
-      const q = query(
-        poolRef, 
-        where('status', '==', 'waiting'),
-        where('isActive', '==', true)
-      );
-      
-      const snapshot = await getDocs(q);
-      const waitingUsers = snapshot.docs.filter(d => d.id !== user.id);
-      
-      setMatchPoolCount(waitingUsers.length);
-      
-      // Bekleyen kullanıcı varsa eşleştir
-      if (waitingUsers.length > 0) {
-        const partner = waitingUsers[0];
-        const partnerData = partner.data();
-        
-        // Oda oluştur
-        const roomRef = await addDoc(collection(db, 'rooms'), {
-          participant1: user.id,
-          participant2: partnerData.userId,
-          startTime: serverTimestamp(),
-          status: 'active',
-          candidates: {}
-        });
-        
-        roomDocRef.current = roomRef.id;
-        
-        // İki kullanıcıyı da eşleştir
-        await updateDoc(doc(db, 'matchPool', user.id), {
-          status: 'matched',
-          partnerId: partnerData.userId,
-          roomId: roomRef.id
-        });
-        
-        await updateDoc(doc(db, 'matchPool', partnerData.userId), {
-          status: 'matched',
-          partnerId: user.id,
-          roomId: roomRef.id
-        });
-        
-        setPartnerInfo({
-          username: partnerData.username,
-          photo: partnerData.profilePhoto,
-          gender: partnerData.gender
-        });
-      }
-    } catch (err) {
-      console.error('Eşleşme kontrolü hatası:', err);
-    }
-  };
-
-  // Görüşmeyi başlat
-  const startCall = async (partnerId: string, roomId: string) => {
-    roomDocRef.current = roomId;
-    
-    try {
-      // Partner bilgilerini al
-      const partnerDoc = await getDoc(doc(db, 'users', partnerId));
-      if (partnerDoc.exists()) {
-        setPartnerInfo({
-          username: partnerDoc.data().username,
-          photo: partnerDoc.data().profilePhoto,
-          gender: partnerDoc.data().gender
-        });
-      }
-      
-      const pc = createPeerConnection(roomId);
-      
-      // Offer oluştur
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      
-      // Offer'ı kaydet
-      await updateDoc(doc(db, 'rooms', roomId), {
-        [`offers.${user?.id}`]: {
-          type: offer.type,
-          sdp: offer.sdp
-        }
-      });
-      
-      // Partner'ın offer/answer'ını dinle
-      const unsubscribe = onSnapshot(doc(db, 'rooms', roomId), async (snapshot) => {
-        const roomData = snapshot.data();
-        if (!roomData || !peerConnectionRef.current) return;
-        
-        const pc = peerConnectionRef.current;
-        
-        try {
-          // Eğer biz offer gönderdiysek, partner'ın answer'ını bekle
-          if (roomData.answers && roomData.answers[partnerId] && !pc.currentRemoteDescription) {
-            const answer = new RTCSessionDescription(roomData.answers[partnerId]);
-            await pc.setRemoteDescription(answer);
-          }
-          
-          // Eğer partner offer gönderdiyse, answer oluştur
-          if (roomData.offers && roomData.offers[partnerId] && !pc.currentRemoteDescription) {
-            const offer = new RTCSessionDescription(roomData.offers[partnerId]);
-            await pc.setRemoteDescription(offer);
-            
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            
-            await updateDoc(doc(db, 'rooms', roomId), {
-              [`answers.${user?.id}`]: {
-                type: answer.type,
-                sdp: answer.sdp
-              }
-            });
-          }
-          
-          // ICE adaylarını ekle
-          if (roomData.candidates && roomData.candidates[partnerId]) {
-            const candidate = new RTCIceCandidate(roomData.candidates[partnerId]);
-            await pc.addIceCandidate(candidate);
-          }
-        } catch (err) {
-          console.error('Sinyalleşme hatası:', err);
-        }
-      });
-      
-    } catch (err) {
-      console.error('Görüşme başlatma hatası:', err);
-      handleEndCall();
-    }
-  };
-
-  // Görüşme süresini başlat
-  const startCallTimer = () => {
-    if (callTimerRef.current) clearInterval(callTimerRef.current);
-    callTimerRef.current = setInterval(() => {
-      setCallDuration(prev => prev + 1);
-    }, 1000);
-  };
-
-  // Görüşmeyi sonlandır
-  const handleEndCall = async () => {
-    // Zamanlayıcıyı durdur
-    if (callTimerRef.current) {
-      clearInterval(callTimerRef.current);
-      callTimerRef.current = null;
+  // Temizlik fonksiyonu
+  const cleanup = useCallback(async () => {
+    // Timer'ı durdur
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
     }
     
-    // WebRTC bağlantısını kapat
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
-      peerConnectionRef.current = null;
+    // Peer connection'ı kapat
+    if (pcRef.current) {
+      pcRef.current.close();
+      pcRef.current = null;
     }
     
     // Medya akışını durdur
-    stopLocalStream();
-    
-    // Eşleşme havuzundan çıkar
-    if (matchDocRef.current) {
-      try {
-        await deleteDoc(doc(db, 'matchPool', matchDocRef.current));
-      } catch (err) {
-        console.error('Eşleşme havuzundan çıkma hatası:', err);
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = null;
       }
-      matchDocRef.current = null;
     }
-    
-    // Odayı güncelle
-    if (roomDocRef.current) {
-      try {
-        await updateDoc(doc(db, 'rooms', roomDocRef.current), {
-          status: 'ended',
-          endTime: serverTimestamp()
-        });
-      } catch (err) {
-        console.error('Oda güncelleme hatası:', err);
-      }
-      roomDocRef.current = null;
-    }
-    
-    // Dinleyicileri kaldır
-    if (unsubscribeRef.current) {
-      unsubscribeRef.current();
-      unsubscribeRef.current = null;
-    }
-    
-    // State'leri sıfırla
-    setIsConnected(false);
-    setIsSearching(false);
-    setPartnerInfo(null);
-    setCallDuration(0);
-    setError('');
     
     // Remote video'yu temizle
     if (remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = null;
     }
     
-    // Kullanıcı durumunu güncelle
+    // Tüm dinleyicileri kaldır
+    unsubscribersRef.current.forEach(unsub => unsub());
+    unsubscribersRef.current = [];
+    
+    // Havuzdan çık
+    if (user) {
+      try {
+        await deleteDoc(doc(db, 'matchPool', user.id));
+      } catch (e) {}
+    }
+    
+    // Odayı kapat
+    if (roomIdRef.current) {
+      try {
+        await updateDoc(doc(db, 'rooms', roomIdRef.current), {
+          status: 'ended',
+          endedAt: serverTimestamp()
+        });
+      } catch (e) {}
+      roomIdRef.current = null;
+    }
+    
+    partnerIdRef.current = null;
+    
     if (user) {
       await updateUserStatus('online');
     }
+  }, [user, updateUserStatus]);
+
+  // Kamera ve mikrofonu başlat
+  const initCamera = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { 
+          width: { ideal: 480 },
+          height: { ideal: 640 },
+          facingMode: 'user'
+        },
+        audio: true
+      });
+      
+      streamRef.current = stream;
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+      }
+      return stream;
+    } catch (err) {
+      console.error('Kamera hatası:', err);
+      setError('Kamera ve mikrofona erişilemedi!');
+      throw err;
+    }
   };
 
-  // Sonraki kullanıcı
-  const handleNextUser = async () => {
-    await handleEndCall();
-    // Kısa bir bekleme sonrası yeni eşleşme
-    setTimeout(() => {
-      joinMatchPool();
+  // Eşleşme havuzuna katıl
+  const startSearching = async () => {
+    if (!user) return;
+    
+    setAppState('searching');
+    setError('');
+    setPoolSize(0);
+    
+    try {
+      // Önce kamerayı başlat
+      await initCamera();
+      
+      // Havuza ekle
+      await setDoc(doc(db, 'matchPool', user.id), {
+        userId: user.id,
+        username: user.username,
+        photo: user.profilePhoto,
+        gender: user.gender,
+        joinedAt: serverTimestamp(),
+        status: 'waiting'
+      });
+      
+      // Havuz değişikliklerini dinle
+      const unsub1 = onSnapshot(
+        collection(db, 'matchPool'),
+        (snapshot) => {
+          const waiting = snapshot.docs.filter(d => 
+            d.data().status === 'waiting' && d.id !== user.id
+          );
+          setPoolSize(waiting.length);
+          
+          // Bekleyen biri varsa eşleştir
+          if (waiting.length > 0 && appState === 'searching') {
+            const match = waiting[0];
+            createMatch(match.id, match.data());
+          }
+        }
+      );
+      unsubscribersRef.current.push(unsub1);
+      
+      // Kendi durumumuzu dinle (başkası bizi bulursa)
+      const unsub2 = onSnapshot(
+        doc(db, 'matchPool', user.id),
+        (doc) => {
+          if (doc.exists() && doc.data().status === 'matched') {
+            const data = doc.data();
+            if (data.partnerId && data.roomId && !roomIdRef.current) {
+              roomIdRef.current = data.roomId;
+              partnerIdRef.current = data.partnerId;
+              startWebRTC(data.roomId, data.partnerId, true);
+            }
+          }
+        }
+      );
+      unsubscribersRef.current.push(unsub2);
+      
+    } catch (err) {
+      console.error('Arama başlatma hatası:', err);
+      setAppState('idle');
+      setError('Eşleşme başlatılamadı');
+    }
+  };
+
+  // Eşleşme oluştur
+  const createMatch = async (partnerId: string, partnerData: any) => {
+    if (!user || roomIdRef.current) return;
+    
+    setAppState('connecting');
+    
+    try {
+      // Oda oluştur
+      const roomRef = await addDoc(collection(db, 'rooms'), {
+        user1: user.id,
+        user2: partnerId,
+        createdAt: serverTimestamp(),
+        status: 'active'
+      });
+      
+      roomIdRef.current = roomRef.id;
+      partnerIdRef.current = partnerId;
+      
+      // İki tarafı da eşleştir
+      await updateDoc(doc(db, 'matchPool', user.id), {
+        status: 'matched',
+        partnerId: partnerId,
+        roomId: roomRef.id
+      });
+      
+      await updateDoc(doc(db, 'matchPool', partnerId), {
+        status: 'matched',
+        partnerId: user.id,
+        roomId: roomRef.id
+      });
+      
+      setPartner({
+        username: partnerData.username,
+        photo: partnerData.photo
+      });
+      
+      // WebRTC bağlantısını başlat
+      await startWebRTC(roomRef.id, partnerId, false);
+      
+    } catch (err) {
+      console.error('Eşleşme oluşturma hatası:', err);
+      cleanup();
+      setAppState('idle');
+    }
+  };
+
+  // WebRTC bağlantısı
+  const startWebRTC = async (roomId: string, partnerId: string, isReceiver: boolean) => {
+    try {
+      const pc = new RTCPeerConnection(iceServers);
+      pcRef.current = pc;
+      
+      // Lokal stream'i ekle
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => {
+          pc.addTrack(track, streamRef.current!);
+        });
+      }
+      
+      // ICE adaylarını gönder
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          const candidateRef = doc(collection(db, 'rooms', roomId, 'signals'));
+          setDoc(candidateRef, {
+            type: 'candidate',
+            candidate: event.candidate.toJSON(),
+            from: user!.id,
+            timestamp: serverTimestamp()
+          });
+        }
+      };
+      
+      // Uzak stream geldi
+      pc.ontrack = (event) => {
+        if (remoteVideoRef.current && event.streams[0]) {
+          remoteVideoRef.current.srcObject = event.streams[0];
+          setAppState('connected');
+          startTimer();
+        }
+      };
+      
+      // Bağlantı koptu
+      pc.oniceconnectionstatechange = () => {
+        if (pc.iceConnectionState === 'disconnected' || 
+            pc.iceConnectionState === 'failed') {
+          handleEndCall();
+        }
+      };
+      
+      // Sinyalleşme dinleyicisi
+      const unsub = onSnapshot(
+        collection(db, 'rooms', roomId, 'signals'),
+        async (snapshot) => {
+          for (const change of snapshot.docChanges()) {
+            if (change.type !== 'added') continue;
+            const signal = change.doc.data();
+            
+            if (signal.from === partnerId) {
+              try {
+                if (signal.type === 'offer') {
+                  await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+                  const answer = await pc.createAnswer();
+                  await pc.setLocalDescription(answer);
+                  await setDoc(doc(collection(db, 'rooms', roomId, 'signals')), {
+                    type: 'answer',
+                    sdp: answer.toJSON(),
+                    from: user!.id,
+                    timestamp: serverTimestamp()
+                  });
+                } else if (signal.type === 'answer') {
+                  await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+                } else if (signal.type === 'candidate') {
+                  await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+                }
+              } catch (err) {
+                console.error('Sinyal işleme hatası:', err);
+              }
+            }
+          }
+        }
+      );
+      unsubscribersRef.current.push(unsub);
+      
+      // Offer gönder (eğer başlatan bizsek)
+      if (!isReceiver) {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        await setDoc(doc(collection(db, 'rooms', roomId, 'signals')), {
+          type: 'offer',
+          sdp: offer.toJSON(),
+          from: user!.id,
+          timestamp: serverTimestamp()
+        });
+      }
+      
+    } catch (err) {
+      console.error('WebRTC hatası:', err);
+      handleEndCall();
+    }
+  };
+
+  // Süre sayacı
+  const startTimer = () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = setInterval(() => {
+      setCallTime(prev => prev + 1);
     }, 1000);
   };
 
-  // Eşleşmeyi iptal et
-  const handleCancelSearch = async () => {
-    setIsSearching(false);
-    stopLocalStream();
-    
-    if (matchDocRef.current) {
-      try {
-        await deleteDoc(doc(db, 'matchPool', matchDocRef.current));
-      } catch (err) {
-        console.error('Eşleşme iptal hatası:', err);
-      }
-      matchDocRef.current = null;
-    }
-    
-    if (unsubscribeRef.current) {
-      unsubscribeRef.current();
-      unsubscribeRef.current = null;
-    }
+  // Görüşmeyi sonlandır
+  const handleEndCall = async () => {
+    await cleanup();
+    setAppState('idle');
+    setPartner(null);
+    setCallTime(0);
   };
 
-  // Mikrofon aç/kapat
+  // Sonraki kullanıcı
+  const handleNext = async () => {
+    await handleEndCall();
+    setTimeout(() => startSearching(), 500);
+  };
+
+  // Aramayı iptal et
+  const handleCancel = async () => {
+    await cleanup();
+    setAppState('idle');
+  };
+
+  // Mikrofon toggle
   const toggleMute = () => {
-    if (localStreamRef.current) {
-      localStreamRef.current.getAudioTracks().forEach(track => {
-        track.enabled = !track.enabled;
-      });
+    if (streamRef.current) {
+      streamRef.current.getAudioTracks().forEach(t => t.enabled = !t.enabled);
       setIsMuted(!isMuted);
     }
   };
 
-  // Kamera aç/kapat
+  // Kamera toggle
   const toggleVideo = () => {
-    if (localStreamRef.current) {
-      localStreamRef.current.getVideoTracks().forEach(track => {
-        track.enabled = !track.enabled;
-      });
+    if (streamRef.current) {
+      streamRef.current.getVideoTracks().forEach(t => t.enabled = !t.enabled);
       setIsVideoOff(!isVideoOff);
     }
   };
 
-  // Süreyi formatla
-  const formatDuration = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
-
+  // Sayfadan çıkınca temizlik
   useEffect(() => {
     if (!user) {
       router.push('/auth/login');
       return;
     }
-    
-    return () => {
-      handleEndCall();
-    };
-  }, [user]);
+    return () => { cleanup(); };
+  }, []);
+
+  const formatTime = (s: number) => {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return `${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
+  };
 
   if (!user) return null;
 
   return (
-    <div className="min-h-screen bg-black relative">
-      {/* Header */}
-      <header className="absolute top-0 left-0 right-0 z-30 bg-gradient-to-b from-black/80 to-transparent p-4">
+    <div className="h-screen bg-black overflow-hidden">
+      
+      {/* === ÜST BAR === */}
+      <div className="absolute top-0 left-0 right-0 z-30 bg-gradient-to-b from-black/90 to-transparent px-4 py-3">
         <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            {isConnected && partnerInfo && (
-              <div className="flex items-center space-x-3">
-                <div className="w-10 h-10 rounded-full bg-purple-600 flex items-center justify-center">
-                  <span className="text-white font-bold">
-                    {partnerInfo.username?.[0]?.toUpperCase() || '?'}
-                  </span>
-                </div>
-                <div>
-                  <p className="text-white font-semibold">{partnerInfo.username}</p>
-                  <p className="text-green-400 text-sm">● Bağlı - {formatDuration(callDuration)}</p>
-                </div>
+          {/* Partner bilgisi */}
+          {appState === 'connected' && partner ? (
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center text-white font-bold text-lg">
+                {partner.username?.[0]?.toUpperCase() || '?'}
               </div>
-            )}
-          </div>
+              <div>
+                <p className="text-white font-semibold text-sm">{partner.username}</p>
+                <p className="text-green-400 text-xs flex items-center gap-1">
+                  <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
+                  {formatTime(callTime)}
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="text-white font-semibold">
+              {appState === 'searching' ? '🔍 Eşleşme aranıyor...' : 
+               appState === 'connecting' ? '🔗 Bağlanıyor...' : 
+               'Mutlu Sohbet'}
+            </div>
+          )}
           
           <UserMenu />
         </div>
-      </header>
+      </div>
 
-      {/* Ana Video Alanı */}
-      <div className="relative w-full h-screen">
-        {/* Karşı Taraf Videosu */}
-        {isConnected ? (
+      {/* === ANA EKRAN === */}
+      <div className="relative w-full h-full">
+        
+        {/* Uzak video (tam ekran arka plan) */}
+        {appState === 'connected' ? (
           <video
             ref={remoteVideoRef}
             autoPlay
             playsInline
-            className="w-full h-full object-cover"
+            className="absolute inset-0 w-full h-full object-cover"
           />
         ) : (
-          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-900 to-gray-800">
-            {isSearching ? (
-              <div className="text-center">
-                <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-purple-500 mx-auto mb-4"></div>
-                <p className="text-white text-xl mb-2">Eşleşme Aranıyor...</p>
-                <p className="text-gray-400">Havuzda {matchPoolCount} kişi bekliyor</p>
+          /* Boş durum - gradient arka plan */
+          <div className="absolute inset-0 bg-gradient-to-br from-gray-900 via-purple-900/20 to-gray-900 flex items-center justify-center">
+            
+            {/* Bekleme ekranı */}
+            {appState === 'idle' && (
+              <div className="text-center px-6">
+                <div className="text-7xl mb-6">🎥</div>
+                <h2 className="text-2xl font-bold text-white mb-3">Görüntülü Sohbete Hazır mısın?</h2>
+                <p className="text-gray-400 mb-8 max-w-sm mx-auto">
+                  Dünyanın her yerinden insanlarla anında bağlantı kur
+                </p>
               </div>
-            ) : (
-              <div className="text-center">
-                <p className="text-gray-400 text-xl mb-4">Görüşme başlatılmadı</p>
+            )}
+
+            {/* Arama ekranı */}
+            {appState === 'searching' && (
+              <div className="text-center px-6">
+                <div className="relative w-24 h-24 mx-auto mb-6">
+                  <div className="absolute inset-0 rounded-full border-4 border-purple-500/30 animate-ping"></div>
+                  <div className="absolute inset-2 rounded-full border-4 border-purple-500 animate-spin border-t-transparent"></div>
+                  <div className="absolute inset-0 flex items-center justify-center text-4xl">🔍</div>
+                </div>
+                <h2 className="text-xl font-bold text-white mb-2">Eşleşme Aranıyor</h2>
+                <p className="text-gray-400">
+                  {poolSize > 0 
+                    ? `🟢 ${poolSize} kişi havuzda bekliyor` 
+                    : 'Havuzda bekleyen yok, biraz bekleyin...'}
+                </p>
+              </div>
+            )}
+
+            {/* Bağlanma ekranı */}
+            {appState === 'connecting' && (
+              <div className="text-center px-6">
+                <div className="text-6xl mb-6 animate-bounce">🔗</div>
+                <h2 className="text-xl font-bold text-white mb-2">Bağlantı Kuruluyor</h2>
+                <p className="text-gray-400">Eşleşme bulundu, bağlanıyor...</p>
               </div>
             )}
           </div>
         )}
 
-        {/* Kendi Videomuz (PIP) */}
-        {(isSearching || isConnected) && (
-          <div className={`absolute ${isConnected ? 'bottom-24 right-4 w-36 h-48 md:w-48 md:h-64' : 'bottom-24 right-4 w-48 h-64 md:w-64 md:h-80'} rounded-xl overflow-hidden border-2 border-gray-600 shadow-2xl`}>
+        {/* Kendi videomuz - PIP */}
+        {(appState === 'searching' || appState === 'connecting' || appState === 'connected') && (
+          <div className={`
+            absolute z-20 rounded-2xl overflow-hidden border-2 border-white/20 shadow-2xl
+            transition-all duration-300
+            ${appState === 'connected' 
+              ? 'bottom-28 right-4 w-32 h-44 md:w-40 md:h-56' 
+              : 'bottom-28 right-4 w-40 h-56 md:w-52 md:h-72'}
+          `}>
             <video
               ref={localVideoRef}
               autoPlay
               playsInline
               muted
-              className="w-full h-full object-cover mirror"
+              className="w-full h-full object-cover"
+              style={{ transform: 'scaleX(-1)' }}
             />
+            {/* Kamera kapalı overlay */}
+            {isVideoOff && (
+              <div className="absolute inset-0 bg-gray-900 flex items-center justify-center">
+                <span className="text-4xl">📷❌</span>
+              </div>
+            )}
           </div>
         )}
 
-        {/* Alt Kontrol Butonları */}
-        <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 z-20">
-          {!isSearching && !isConnected ? (
-            // Başlangıç Butonu
-            <button
-              onClick={joinMatchPool}
-              className="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-10 py-5 rounded-full text-lg font-bold hover:from-purple-700 hover:to-pink-700 transition-all transform hover:scale-105 shadow-2xl animate-pulse"
-            >
-              🎥 Sohbete Başla
-            </button>
-          ) : isSearching ? (
-            // Arama İptal Butonu
-            <button
-              onClick={handleCancelSearch}
-              className="bg-red-600 text-white px-8 py-4 rounded-full text-lg font-bold hover:bg-red-700 transition-all flex items-center space-x-2"
-            >
-              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
-              <span>Eşleşmeyi İptal Et</span>
-            </button>
-          ) : (
-            // Görüşme Kontrolleri
-            <div className="flex items-center space-x-4">
-              {/* Mikrofon */}
-              <button
-                onClick={toggleMute}
-                className={`p-4 rounded-full transition-all ${
-                  isMuted ? 'bg-red-600' : 'bg-gray-700 hover:bg-gray-600'
-                }`}
-              >
-                {isMuted ? (
-                  <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                    <line x1="3" y1="3" x2="21" y2="21" strokeWidth={2} />
-                  </svg>
-                ) : (
-                  <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                  </svg>
-                )}
-              </button>
-
-              {/* Görüşmeyi Sonlandır */}
-              <button
-                onClick={handleEndCall}
-                className="bg-red-600 p-5 rounded-full hover:bg-red-700 transition-all transform hover:scale-110 shadow-lg"
-              >
-                <svg className="w-8 h-8 text-white" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/>
-                </svg>
-              </button>
-
-              {/* Sonraki Kullanıcı */}
-              <button
-                onClick={handleNextUser}
-                className="bg-blue-600 p-4 rounded-full hover:bg-blue-700 transition-all"
-              >
-                <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                </svg>
-              </button>
-
-              {/* Kamera */}
-              <button
-                onClick={toggleVideo}
-                className={`p-4 rounded-full transition-all ${
-                  isVideoOff ? 'bg-red-600' : 'bg-gray-700 hover:bg-gray-600'
-                }`}
-              >
-                {isVideoOff ? (
-                  <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                    <line x1="3" y1="3" x2="21" y2="21" strokeWidth={2} />
-                  </svg>
-                ) : (
-                  <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                  </svg>
-                )}
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Hata Mesajı */}
+        {/* Hata mesajı */}
         {error && (
-          <div className="absolute top-20 left-1/2 transform -translate-x-1/2 bg-red-600 text-white px-6 py-3 rounded-lg z-40">
-            <p>{error}</p>
-            <button onClick={() => setError('')} className="ml-2 underline">Kapat</button>
+          <div className="absolute top-20 left-1/2 -translate-x-1/2 z-40 bg-red-500 text-white px-6 py-3 rounded-xl shadow-lg flex items-center gap-3">
+            <span>⚠️</span>
+            <span>{error}</span>
+            <button onClick={() => setError('')} className="ml-2 font-bold">✕</button>
           </div>
         )}
-      </div>
 
-      <style jsx>{`
-        .mirror {
-          transform: scaleX(-1);
-        }
-      `}</style>
+        {/* === ALT KONTROL BUTONLARI === */}
+        <div className="absolute bottom-0 left-0 right-0 z-30 bg-gradient-to-t from-black/90 to-transparent pb-8 pt-16 px-4">
+          <div className="flex items-center justify-center gap-4 md:gap-6">
+            
+            {/* IDLE - Başlat butonu */}
+            {appState === 'idle' && (
+              <button
+                onClick={startSearching}
+                className="group relative bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white px-10 py-4 rounded-full text-lg font-bold transition-all hover:scale-105 active:scale-95 shadow-lg shadow-purple-500/30"
+              >
+                <span className="flex items-center gap-2">
+                  <span className="text-2xl">🎥</span>
+                  Sohbete Başla
+                </span>
+              </button>
+            )}
+
+            {/* SEARCHING - İptal butonu */}
+            {appState === 'searching' && (
+              <button
+                onClick={handleCancel}
+                className="bg-red-500 hover:bg-red-600 text-white px-8 py-4 rounded-full text-base font-bold transition-all hover:scale-105 active:scale-95 shadow-lg shadow-red-500/30 flex items-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+                İptal Et
+              </button>
+            )}
+
+            {/* CONNECTED - Görüşme kontrolleri */}
+            {appState === 'connected' && (
+              <>
+                {/* Ses */}
+                <button
+                  onClick={toggleMute}
+                  className={`w-14 h-14 rounded-full flex items-center justify-center transition-all hover:scale-110 active:scale-95 ${
+                    isMuted ? 'bg-red-500' : 'bg-white/10 hover:bg-white/20'
+                  }`}
+                >
+                  {isMuted ? (
+                    <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                      <line x1="1" y1="1" x2="23" y2="23" strokeWidth={2.5} />
+                    </svg>
+                  ) : (
+                    <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                    </svg>
+                  )}
+                </button>
+
+                {/* Kapat */}
+                <button
+                  onClick={handleEndCall}
+                  className="w-16 h-16 bg-red-500 hover:bg-red-600 rounded-full flex items-center justify-center transition-all hover:scale-110 active:scale-95 shadow-lg shadow-red-500/30"
+                >
+                  <svg className="w-8 h-8 text-white" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M6.62 10.79a15.05 15.05 0 006.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/>
+                  </svg>
+                </button>
+
+                {/* Sonraki */}
+                <button
+                  onClick={handleNext}
+                  className="w-14 h-14 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center transition-all hover:scale-110 active:scale-95"
+                >
+                  <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                  </svg>
+                </button>
+
+                {/* Kamera */}
+                <button
+                  onClick={toggleVideo}
+                  className={`w-14 h-14 rounded-full flex items-center justify-center transition-all hover:scale-110 active:scale-95 ${
+                    isVideoOff ? 'bg-red-500' : 'bg-white/10 hover:bg-white/20'
+                  }`}
+                >
+                  {isVideoOff ? (
+                    <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                      <line x1="1" y1="1" x2="23" y2="23" strokeWidth={2.5} />
+                    </svg>
+                  ) : (
+                    <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                  )}
+                </button>
+              </>
+            )}
+
+            {/* CONNECTING - Bağlanıyor (sadece iptal) */}
+            {appState === 'connecting' && (
+              <button
+                onClick={handleCancel}
+                className="bg-red-500 hover:bg-red-600 text-white px-8 py-4 rounded-full text-base font-bold transition-all hover:scale-105 active:scale-95"
+              >
+                İptal Et
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
