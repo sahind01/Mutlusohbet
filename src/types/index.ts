@@ -7,7 +7,6 @@ export interface User {
   id: string;
   username: string;
   email: string;
-  password?: string;
   gender: Gender;
   profilePhoto: string;
   role: UserRole;
@@ -65,13 +64,14 @@ export interface Advertisement {
 export interface PremiumPackage {
   id: string;
   name: string;
-  duration: number; // gün
+  duration: number;
   price: number;
   features: string[];
   isActive: boolean;
 }
 
 export interface Statistics {
+  id: string;
   dailyUsers: number;
   dailyMatches: number;
   premiumSales: number;
