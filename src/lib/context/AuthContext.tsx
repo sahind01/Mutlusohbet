@@ -9,9 +9,28 @@ import {
   signOut,
   onAuthStateChanged
 } from 'firebase/auth';
-import { auth, db } from '@/lib/firebase';
-import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
-import type { User as AppUser, Gender, UserStatus } from '@/types';
+import { auth, db, ref, set, get, update } from '@/lib/firebase';
+import type { Gender, UserStatus } from '@/types';
+
+interface AppUser {
+  id: string;
+  username: string;
+  email: string;
+  gender: string;
+  profilePhoto: string;
+  role: string;
+  status: string;
+  dailyMatches: number;
+  totalMatches: number;
+  reports: any[];
+  matchHistory: any[];
+  createdAt: any;
+  lastActive: any;
+  premiumSince?: any;
+  premiumExpiry?: any;
+  bannedUntil?: any;
+  banReason?: string;
+}
 
 interface AuthContextType {
   user: AppUser | null;
@@ -40,18 +59,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser: FirebaseUser | null) => {
       if (firebaseUser) {
         try {
-          const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
-          if (userDoc.exists()) {
-            const userData = userDoc.data();
-            setUser({ 
-              id: firebaseUser.uid, 
-              ...userData,
-              createdAt: userData.createdAt?.toDate() || new Date(),
-              lastActive: userData.lastActive?.toDate() || new Date(),
-              premiumSince: userData.premiumSince?.toDate(),
-              premiumExpiry: userData.premiumExpiry?.toDate(),
-              bannedUntil: userData.bannedUntil?.toDate(),
-            } as AppUser);
+          const userRef = ref(db, `users/${firebaseUser.uid}`);
+          const snapshot = await get(userRef);
+          if (snapshot.exists()) {
+            setUser({ id: firebaseUser.uid, ...snapshot.val() } as AppUser);
+          } else {
+            setUser(null);
           }
         } catch (error) {
           console.error('Kullanıcı verisi alınamadı:', error);
@@ -78,53 +91,64 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       email: data.email,
       gender: data.gender,
       profilePhoto: data.profilePhoto || '/default-avatar.png',
-      role: 'free' as const,
-      status: 'online' as const,
+      role: 'free',
+      status: 'online',
       dailyMatches: 0,
       totalMatches: 0,
       reports: [],
       matchHistory: [],
-      createdAt: new Date(),
-      lastActive: new Date()
+      createdAt: new Date().toISOString(),
+      lastActive: new Date().toISOString()
     };
 
-    await setDoc(doc(db, 'users', firebaseUser.uid), userData);
+    await set(ref(db, `users/${firebaseUser.uid}`), userData);
     setUser({ id: firebaseUser.uid, ...userData } as AppUser);
   };
 
   const login = async (email: string, password: string) => {
     const { user: firebaseUser } = await signInWithEmailAndPassword(auth, email, password);
-    const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
+    const userRef = ref(db, `users/${firebaseUser.uid}`);
+    const snapshot = await get(userRef);
     
-    if (userDoc.exists()) {
-      const userData = userDoc.data();
-      const user = { 
-        id: firebaseUser.uid, 
-        ...userData,
-        createdAt: userData.createdAt?.toDate() || new Date(),
-        lastActive: userData.lastActive?.toDate() || new Date(),
-        premiumSince: userData.premiumSince?.toDate(),
-        premiumExpiry: userData.premiumExpiry?.toDate(),
-        bannedUntil: userData.bannedUntil?.toDate(),
-      } as AppUser;
+    if (snapshot.exists()) {
+      const userData = snapshot.val();
+      const appUser = { id: firebaseUser.uid, ...userData } as AppUser;
       
-      if (user.status === 'banned') {
+      if (appUser.status === 'banned') {
         throw new Error('Hesabınız yasaklanmıştır.');
       }
       
-      setUser(user);
-      await updateDoc(doc(db, 'users', firebaseUser.uid), {
+      setUser(appUser);
+      await update(ref(db, `users/${firebaseUser.uid}`), {
         status: 'online',
-        lastActive: new Date()
+        lastActive: new Date().toISOString()
       });
+    } else {
+      // Kullanıcı auth'da var ama DB'de yoksa oluştur
+      const newUser = {
+        username: firebaseUser.email?.split('@')[0] || 'Kullanıcı',
+        email: email,
+        gender: 'other',
+        profilePhoto: '/default-avatar.png',
+        role: 'free',
+        status: 'online',
+        dailyMatches: 0,
+        totalMatches: 0,
+        reports: [],
+        matchHistory: [],
+        createdAt: new Date().toISOString(),
+        lastActive: new Date().toISOString()
+      };
+      await set(ref(db, `users/${firebaseUser.uid}`), newUser);
+      setUser({ id: firebaseUser.uid, ...newUser } as AppUser);
     }
   };
 
   const logout = async () => {
     if (user) {
-      await updateDoc(doc(db, 'users', user.id), {
+      await update(ref(db, `users/${user.id}`), {
         status: 'offline',
-        lastActive: new Date()
+        lastActive: new Date().toISOString()
       });
     }
     await signOut(auth);
@@ -133,7 +157,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const updateUserStatus = async (status: string) => {
     if (user) {
-      await updateDoc(doc(db, 'users', user.id), { status });
+      await update(ref(db, `users/${user.id}`), { status });
       setUser({ ...user, status: status as UserStatus });
     }
   };
