@@ -11,7 +11,6 @@ import {
   getDocs, 
   updateDoc, 
   doc, 
-  where, 
   orderBy, 
   limit,
   addDoc,
@@ -22,13 +21,15 @@ import type { User as AppUser, Advertisement, Statistics } from '@/types';
 type Tab = 'users' | 'ads' | 'stats' | 'reports';
 
 export default function AdminPage() {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<Tab>('users');
   const [users, setUsers] = useState<AppUser[]>([]);
   const [ads, setAds] = useState<Advertisement[]>([]);
   const [stats, setStats] = useState<Statistics[]>([]);
   const [loading, setLoading] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
 
   // Yeni Reklam Formu
   const [adForm, setAdForm] = useState({
@@ -139,7 +140,7 @@ export default function AdminPage() {
       await updateDoc(doc(db, 'users', userId), {
         status: 'banned',
         banReason: reason,
-        bannedUntil: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 gün
+        bannedUntil: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
       });
       loadData();
     } catch (error) {
@@ -238,35 +239,143 @@ export default function AdminPage() {
     }
   };
 
+  const handleLogout = async () => {
+    await logout();
+    router.push('/');
+  };
+
   if (!user || user.role !== 'admin') return null;
+
+  const menuItems = [
+    { id: 'users', label: 'Kullanıcılar', icon: '👥' },
+    { id: 'ads', label: 'Reklam Yönetimi', icon: '📢' },
+    { id: 'stats', label: 'İstatistikler', icon: '📊' },
+    { id: 'reports', label: 'Şikayetler', icon: '🚨' }
+  ];
 
   return (
     <div className="min-h-screen bg-gray-900 text-white">
-      {/* Sidebar */}
-      <div className="flex flex-col md:flex-row">
-        <div className="w-full md:w-64 bg-gray-800 min-h-screen p-6">
+      {/* Üst Bar */}
+      <header className="bg-gray-800 border-b border-gray-700 px-4 py-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-4">
+            {/* Hamburger Menü Butonu */}
+            <button
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              className="text-gray-400 hover:text-white focus:outline-none"
+            >
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
+            <h1 className="text-xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 text-transparent bg-clip-text">
+              Admin Panel
+            </h1>
+          </div>
+
+          {/* Kullanıcı Menüsü */}
+          <div className="relative">
+            <button
+              onClick={() => setUserMenuOpen(!userMenuOpen)}
+              className="flex items-center space-x-2 hover:bg-gray-700 rounded-lg px-3 py-2 transition-colors"
+            >
+              <div className="w-8 h-8 rounded-full bg-purple-600 flex items-center justify-center">
+                <span className="text-white font-bold text-sm">
+                  {user.username?.[0]?.toUpperCase() || 'A'}
+                </span>
+              </div>
+              <span className="hidden md:block text-sm">{user.username}</span>
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {/* Dropdown Menü */}
+            {userMenuOpen && (
+              <div className="absolute right-0 mt-2 w-48 bg-gray-800 rounded-lg shadow-xl border border-gray-700 py-2 z-50">
+                <div className="px-4 py-2 border-b border-gray-700">
+                  <p className="text-sm font-semibold">{user.username}</p>
+                  <p className="text-xs text-gray-400">{user.email}</p>
+                  <span className="inline-block mt-1 px-2 py-1 bg-yellow-600 text-xs rounded-full">
+                    Admin
+                  </span>
+                </div>
+                <button
+                  onClick={() => {
+                    router.push('/');
+                    setUserMenuOpen(false);
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm hover:bg-gray-700 transition-colors flex items-center space-x-2"
+                >
+                  <span>🏠</span>
+                  <span>Ana Sayfa</span>
+                </button>
+                <button
+                  onClick={() => {
+                    router.push('/chat');
+                    setUserMenuOpen(false);
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm hover:bg-gray-700 transition-colors flex items-center space-x-2"
+                >
+                  <span>💬</span>
+                  <span>Sohbete Git</span>
+                </button>
+                <hr className="border-gray-700 my-1" />
+                <button
+                  onClick={() => {
+                    handleLogout();
+                    setUserMenuOpen(false);
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm hover:bg-gray-700 transition-colors flex items-center space-x-2 text-red-400"
+                >
+                  <span>🚪</span>
+                  <span>Çıkış Yap</span>
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </header>
+
+      <div className="flex">
+        {/* Sidebar - Mobil Overlay */}
+        {sidebarOpen && (
+          <div 
+            className="fixed inset-0 bg-black bg-opacity-50 z-40 md:hidden"
+            onClick={() => setSidebarOpen(false)}
+          />
+        )}
+
+        {/* Sidebar */}
+        <aside className={`
+          fixed md:static inset-y-0 left-0 z-50
+          w-64 bg-gray-800 min-h-screen p-6
+          transform transition-transform duration-300 ease-in-out
+          ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+          md:translate-x-0
+        `}>
           <div className="flex items-center justify-between mb-8">
             <h1 className="text-2xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 text-transparent bg-clip-text">
               Admin Panel
             </h1>
             <button
-              onClick={() => router.push('/')}
+              onClick={() => setSidebarOpen(false)}
               className="md:hidden text-gray-400 hover:text-white"
             >
-              Ana Sayfa
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
             </button>
           </div>
           
           <nav className="space-y-2">
-            {[
-              { id: 'users', label: 'Kullanıcılar', icon: '👥' },
-              { id: 'ads', label: 'Reklam Yönetimi', icon: '📢' },
-              { id: 'stats', label: 'İstatistikler', icon: '📊' },
-              { id: 'reports', label: 'Şikayetler', icon: '🚨' }
-            ].map((tab) => (
+            {menuItems.map((tab) => (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id as Tab)}
+                onClick={() => {
+                  setActiveTab(tab.id as Tab);
+                  setSidebarOpen(false);
+                }}
                 className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors ${
                   activeTab === tab.id 
                     ? 'bg-purple-600 text-white' 
@@ -278,10 +387,10 @@ export default function AdminPage() {
               </button>
             ))}
           </nav>
-        </div>
+        </aside>
 
         {/* Ana İçerik */}
-        <div className="flex-1 p-4 md:p-8 overflow-x-auto">
+        <main className="flex-1 p-4 md:p-8 overflow-x-auto">
           {loading ? (
             <div className="flex items-center justify-center h-64">
               <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500"></div>
@@ -390,7 +499,6 @@ export default function AdminPage() {
                 <div>
                   <h2 className="text-2xl md:text-3xl font-bold mb-8">Reklam Yönetimi</h2>
                   
-                  {/* Yeni Reklam Ekleme Formu */}
                   <div className="bg-gray-800 rounded-xl p-4 md:p-6 mb-8">
                     <h3 className="text-xl font-semibold mb-4">Yeni Reklam Ekle</h3>
                     
@@ -488,7 +596,6 @@ export default function AdminPage() {
                     </button>
                   </div>
 
-                  {/* Mevcut Reklamlar */}
                   <div className="bg-gray-800 rounded-xl overflow-x-auto">
                     <table className="w-full min-w-[800px]">
                       <thead>
@@ -552,42 +659,17 @@ export default function AdminPage() {
                   <h2 className="text-2xl md:text-3xl font-bold mb-8">İstatistikler</h2>
                   
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-8">
-                    <StatCard
-                      title="Günlük Kullanıcı"
-                      value={stats[0]?.dailyUsers || 0}
-                      color="bg-blue-600"
-                    />
-                    <StatCard
-                      title="Günlük Eşleşme"
-                      value={stats[0]?.dailyMatches || 0}
-                      color="bg-purple-600"
-                    />
-                    <StatCard
-                      title="Premium Satış"
-                      value={stats[0]?.premiumSales || 0}
-                      color="bg-yellow-600"
-                    />
-                    <StatCard
-                      title="Reklam Gösterim"
-                      value={stats[0]?.adImpressions || 0}
-                      color="bg-green-600"
-                    />
-                    <StatCard
-                      title="Reklam Tıklama"
-                      value={stats[0]?.adClicks || 0}
-                      color="bg-pink-600"
-                    />
-                    <StatCard
-                      title="Aktif Kullanıcı"
-                      value={stats[0]?.activeUsers || 0}
-                      color="bg-indigo-600"
-                    />
+                    <StatCard title="Günlük Kullanıcı" value={stats[0]?.dailyUsers || 0} color="bg-blue-600" />
+                    <StatCard title="Günlük Eşleşme" value={stats[0]?.dailyMatches || 0} color="bg-purple-600" />
+                    <StatCard title="Premium Satış" value={stats[0]?.premiumSales || 0} color="bg-yellow-600" />
+                    <StatCard title="Reklam Gösterim" value={stats[0]?.adImpressions || 0} color="bg-green-600" />
+                    <StatCard title="Reklam Tıklama" value={stats[0]?.adClicks || 0} color="bg-pink-600" />
+                    <StatCard title="Aktif Kullanıcı" value={stats[0]?.activeUsers || 0} color="bg-indigo-600" />
                   </div>
 
                   <div className="bg-gray-800 rounded-xl p-6 text-center text-gray-400">
                     <p className="text-2xl mb-2">📊</p>
                     <p>Detaylı istatistikler için veritabanına veri girişi yapılması gerekmektedir.</p>
-                    <p className="mt-2 text-sm">Firebase Console'dan statistics koleksiyonuna veri ekleyebilirsiniz.</p>
                   </div>
                 </div>
               )}
@@ -604,7 +686,7 @@ export default function AdminPage() {
               )}
             </>
           )}
-        </div>
+        </main>
       </div>
     </div>
   );
