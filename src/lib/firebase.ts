@@ -1,7 +1,7 @@
 // src/lib/firebase.ts
 import { initializeApp, getApps } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { getDatabase, ref, set, get, update, remove, onValue, push } from 'firebase/database';
 import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
@@ -15,10 +15,10 @@ const firebaseConfig = {
   measurementId: "G-FEX7NBQG0R"
 };
 
-// Firebase'i başlat
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
 const auth = getAuth(app);
-const db = getFirestore(app);
+const db = getDatabase(app);
 const storage = getStorage(app);
 
-export { app, auth, db, storage };
+export { app, auth, db, storage, ref, set, get, update, remove, onValue, push };
+export default app;
